@@ -48,7 +48,10 @@ contract ChainlinkPriceOracle is RoleManager, IPriceOracle {
         if (answeredInRound < roundId) revert InvalidPrice();
         if (cfg.maxAge != 0 && (updatedAt == 0 || block.timestamp - updatedAt > cfg.maxAge)) revert StalePrice();
 
-        uint256 price = uint256(answer);
+        uint256 price;
+        assembly {
+            price := answer
+        }
         uint8 feedDecimals = IChainlinkAggregatorV3(cfg.feed).decimals();
         if (feedDecimals == 18) return price;
         if (feedDecimals < 18) return price * (10 ** (18 - feedDecimals));

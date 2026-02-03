@@ -17,3 +17,5 @@ contracts/coverage/
 contracts/coverage-report/
 contracts/.gas-snapshot
 contracts/.forge-coverage
+
+server/dist/

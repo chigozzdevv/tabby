@@ -1,0 +1,29 @@
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  server:
+    build: .
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: tabby
+      RPC_URL: ${RPC_URL:-https://testnet-rpc.monad.xyz}
+      CHAIN_ID: ${CHAIN_ID:-10143}
+      AGENT_LOAN_MANAGER_ADDRESS: ${AGENT_LOAN_MANAGER_ADDRESS:-0x0000000000000000000000000000000000000000}
+      TABBY_PRIVATE_KEY: ${TABBY_PRIVATE_KEY:-0x0000000000000000000000000000000000000000000000000000000000000000}
+      MOLTBOOK_BASE_URL: ${MOLTBOOK_BASE_URL:-https://www.moltbook.com/api/v1}
+      MOLTBOOK_AUDIENCE: ${MOLTBOOK_AUDIENCE:-tabby.local}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:
+
