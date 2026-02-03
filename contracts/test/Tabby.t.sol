@@ -13,6 +13,7 @@ import {ChainlinkPriceOracle} from "../src/oracle/chainlink-price-oracle.sol";
 import {RoleManager} from "../src/access/role-manager.sol";
 import {RiskEngine} from "../src/risk/risk-engine.sol";
 import {LiquidationEngine} from "../src/risk/liquidation-engine.sol";
+import {PoolShareRewards} from "../src/rewards/pool-share-rewards.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockChainlinkAggregatorV3} from "./mocks/MockChainlinkAggregatorV3.sol";
@@ -303,6 +304,108 @@ contract TabbyAdminlessPoolTest is TestBase {
 
         vm.expectRevert(RoleManager.Unauthorized.selector);
         pool.setWalletRegistry(address(0x8888));
+
+        vm.expectRevert(RoleManager.Unauthorized.selector);
+        pool.setFeeConfig(200, 300);
+
+        vm.expectRevert(RoleManager.Unauthorized.selector);
+        pool.setFeeRecipients(address(0x9991), address(0x9992));
+
+        bytes32 stakeRole = pool.STAKE_ROLE();
+        vm.expectRevert(RoleManager.Unauthorized.selector);
+        pool.grantRole(stakeRole, address(0x9993));
+    }
+}
+
+contract TabbyFeesAndRewardsTest is TestBase {
+    function test_securedPool_feeSharesMinted_onRepay_dilutesLp() external {
+        MockERC20 debt = new MockERC20("Wrapped MON", "WMON", 18);
+        LiquidityPool pool = new LiquidityPool(address(this), address(debt));
+
+        address lp = address(0x1111);
+        debt.mint(lp, 1000 ether);
+        vm.startPrank(lp);
+        debt.approve(address(pool), type(uint256).max);
+        pool.deposit(1000 ether);
+        vm.stopPrank();
+
+        pool.setFeeConfig(200, 300);
+        address rewardsRecipient = address(0xAAAA);
+        address reserveRecipient = address(0xBBBB);
+        pool.setFeeRecipients(rewardsRecipient, reserveRecipient);
+
+        pool.grantRole(pool.BORROW_ROLE(), address(this));
+        pool.grantRole(pool.REPAY_ROLE(), address(this));
+
+        address borrower = address(0x2222);
+        pool.borrow(100 ether, borrower);
+        assertEq(pool.totalOutstandingPrincipal(), 100 ether, "outstanding principal");
+
+        debt.mint(address(this), 200 ether);
+        debt.approve(address(pool), type(uint256).max);
+
+        uint256 sharesBefore = pool.totalShares();
+        uint256 assetsBefore = pool.totalAssets();
+        assertEq(sharesBefore, 1000 ether, "shares before");
+        assertEq(assetsBefore, 1000 ether, "assets before");
+
+        pool.repay(100 ether, 200 ether);
+
+        uint256 assetsAfter = pool.totalAssets();
+        assertEq(assetsAfter, 1100 ether, "assets after");
+
+        uint256 interest = 100 ether;
+        uint256 feeAssets = (interest * 500) / 10000;
+        uint256 expectedFeeShares = (feeAssets * sharesBefore) / (assetsAfter - feeAssets);
+        uint256 expectedRewardsShares = (expectedFeeShares * 200) / 500;
+        uint256 expectedReserveShares = expectedFeeShares - expectedRewardsShares;
+
+        assertEq(pool.totalShares(), sharesBefore + expectedFeeShares, "fee shares minted");
+        assertEq(pool.balanceOf(rewardsRecipient), expectedRewardsShares, "rewards shares");
+        assertEq(pool.balanceOf(reserveRecipient), expectedReserveShares, "reserve shares");
+
+        vm.startPrank(lp);
+        uint256 lpWithdrawn = pool.withdraw(pool.balanceOf(lp));
+        vm.stopPrank();
+
+        uint256 expectedLpWithdrawn = (sharesBefore * assetsAfter) / (sharesBefore + expectedFeeShares);
+        assertEq(lpWithdrawn, expectedLpWithdrawn, "lp withdraw");
+    }
+
+    function test_poolShareRewards_locksShares_and_paysRewards() external {
+        MockERC20 asset = new MockERC20("Wrapped MON", "WMON", 18);
+        MockERC20 tabby = new MockERC20("Tabby", "TABBY", 18);
+
+        LiquidityPool pool = new LiquidityPool(address(this), address(asset));
+        PoolShareRewards rewards = new PoolShareRewards(address(this), address(pool), address(tabby));
+        pool.grantRole(pool.STAKE_ROLE(), address(rewards));
+
+        address lp = address(0x3333);
+        asset.mint(lp, 1000 ether);
+        vm.startPrank(lp);
+        asset.approve(address(pool), type(uint256).max);
+        pool.deposit(1000 ether);
+
+        rewards.stake(400 ether);
+
+        vm.expectRevert(LiquidityPool.InvalidAmount.selector);
+        pool.withdraw(700 ether);
+
+        vm.stopPrank();
+
+        tabby.mint(address(this), 100 ether);
+        tabby.approve(address(rewards), type(uint256).max);
+        rewards.notifyRewardAmount(100 ether);
+
+        vm.startPrank(lp);
+
+        uint256 claimed = rewards.claim();
+        assertEq(claimed, 100 ether, "claimed");
+        assertEq(tabby.balanceOf(lp), 100 ether, "tabby balance");
+
+        rewards.unstake(400 ether);
+        pool.withdraw(600 ether);
+        vm.stopPrank();
     }
 }
 

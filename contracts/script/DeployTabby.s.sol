@@ -14,6 +14,8 @@ import {LoanManager} from "../src/core/loan-manager.sol";
 import {RiskEngine} from "../src/risk/risk-engine.sol";
 import {LiquidationEngine} from "../src/risk/liquidation-engine.sol";
 
+import {PoolShareRewards} from "../src/rewards/pool-share-rewards.sol";
+
 interface Vm {
     function addr(uint256 privateKey) external returns (address);
     function envAddress(string calldata name) external returns (address);
@@ -36,7 +38,9 @@ contract DeployTabby {
         address borrowerPolicyRegistry,
         address nativePool,
         address agentLoanManager,
+        address nativeShareRewards,
         address securedPool,
+        address securedShareRewards,
         address policyEngine,
         address priceOracle,
         address positionManager,
@@ -57,6 +61,12 @@ contract DeployTabby {
         bool useWalletRegistry = vm.envOr("USE_WALLET_REGISTRY", false);
         address riskCommittee = vm.envOr("RISK_COMMITTEE", governance);
 
+        uint16 rewardsFeeBps = _asUint16(vm.envOr("POOL_REWARDS_FEE_BPS", uint256(200)));
+        uint16 reserveFeeBps = _asUint16(vm.envOr("POOL_RESERVE_FEE_BPS", uint256(300)));
+        address rewardsFeeRecipient = vm.envOr("POOL_REWARDS_FEE_RECIPIENT", governance);
+        address reserveFeeRecipient = vm.envOr("POOL_RESERVE_FEE_RECIPIENT", governance);
+        address tabbyToken = vm.envOr("TABBY_TOKEN", address(0));
+
         address wmon = _resolveWmon();
 
         vm.startBroadcast(deployerPk);
@@ -76,7 +86,26 @@ contract DeployTabby {
         nativePool.grantRole(nativePool.REPAY_ROLE(), address(agentLoanManager));
         nativePool.grantRole(nativePool.RISK_ROLE(), address(agentLoanManager));
 
+        nativePool.setFeeConfig(rewardsFeeBps, reserveFeeBps);
+        nativePool.setFeeRecipients(rewardsFeeRecipient, reserveFeeRecipient);
+
+        PoolShareRewards nativeShareRewards = tabbyToken == address(0)
+            ? PoolShareRewards(address(0))
+            : new PoolShareRewards(deployer, address(nativePool), tabbyToken);
+        if (address(nativeShareRewards) != address(0)) {
+            nativePool.grantRole(nativePool.STAKE_ROLE(), address(nativeShareRewards));
+        }
+
         LiquidityPool securedPool = new LiquidityPool(deployer, wmon);
+        securedPool.setFeeConfig(rewardsFeeBps, reserveFeeBps);
+        securedPool.setFeeRecipients(rewardsFeeRecipient, reserveFeeRecipient);
+
+        PoolShareRewards securedShareRewards = tabbyToken == address(0)
+            ? PoolShareRewards(address(0))
+            : new PoolShareRewards(deployer, address(securedPool), tabbyToken);
+        if (address(securedShareRewards) != address(0)) {
+            securedPool.grantRole(securedPool.STAKE_ROLE(), address(securedShareRewards));
+        }
 
         PolicyEngine policyEngine = new PolicyEngine(deployer);
         ChainlinkPriceOracle priceOracle = new ChainlinkPriceOracle(deployer);
@@ -130,7 +159,9 @@ contract DeployTabby {
             address(borrowerPolicyRegistry),
             address(nativePool),
             address(agentLoanManager),
+            address(nativeShareRewards),
             address(securedPool),
+            address(securedShareRewards),
             address(policyEngine),
             address(priceOracle),
             address(positionManager),
@@ -185,6 +216,13 @@ contract DeployTabby {
 
     function _asUint48(uint256 value) internal pure returns (uint48 out) {
         if (value > type(uint48).max) revert MaxAgeTooLarge();
+        assembly {
+            out := value
+        }
+    }
+
+    function _asUint16(uint256 value) internal pure returns (uint16 out) {
+        if (value > type(uint16).max) revert MaxAgeTooLarge();
         assembly {
             out := value
         }
