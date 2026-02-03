@@ -3,12 +3,13 @@ pragma solidity ^0.8.27;
 
 import {RoleManager} from "../access/role-manager.sol";
 import {SafeErc20} from "../libraries/safe-erc20.sol";
-import {PriceOracle} from "../oracle/price-oracle.sol";
+import {IPriceOracle} from "../oracle/i-price-oracle.sol";
 import {PolicyEngine} from "../policy/policy-engine.sol";
 import {RiskEngine} from "../risk/risk-engine.sol";
 import {PositionManager} from "../core/position-manager.sol";
 import {LoanManager} from "../core/loan-manager.sol";
 import {LiquidityPool} from "../core/liquidity-pool.sol";
+import {IERC20} from "../interfaces/i-erc20.sol";
 
 contract LiquidationEngine is RoleManager {
     using SafeErc20 for address;
@@ -69,15 +70,17 @@ contract LiquidationEngine is RoleManager {
         if (debt == 0) revert NoDebt();
         if (debtAsset == address(0)) revert InvalidDebtAsset();
 
-        uint256 collateralPrice = PriceOracle(priceOracle).getPrice(collateralAsset);
-        uint256 debtPrice = PriceOracle(priceOracle).getPrice(debtAsset);
+        uint256 collateralPrice = IPriceOracle(priceOracle).getPrice(collateralAsset);
+        uint256 debtPrice = IPriceOracle(priceOracle).getPrice(debtAsset);
         if (collateralPrice == 0 || debtPrice == 0) revert PriceUnavailable();
 
         (, uint256 liquidationThresholdBps, , bool policyEnabled) = PolicyEngine(policyEngine).policies(collateralAsset);
         if (!policyEnabled) revert PositionHealthy();
 
-        uint256 collateralValue = (collateralAmount * collateralPrice) / 1e18;
-        uint256 debtValue = (debt * debtPrice) / 1e18;
+        uint8 collateralDecimals = IERC20(collateralAsset).decimals();
+        uint8 debtDecimals = IERC20(debtAsset).decimals();
+        uint256 collateralValue = (collateralAmount * collateralPrice) / (10 ** collateralDecimals);
+        uint256 debtValue = (debt * debtPrice) / (10 ** debtDecimals);
         bool healthy = RiskEngine(riskEngine).isHealthy(collateralValue, debtValue, liquidationThresholdBps);
         if (healthy) revert PositionHealthy();
 

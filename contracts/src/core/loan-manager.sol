@@ -3,10 +3,11 @@ pragma solidity ^0.8.27;
 
 import {RoleManager} from "../access/role-manager.sol";
 import {SafeErc20} from "../libraries/safe-erc20.sol";
-import {PriceOracle} from "../oracle/price-oracle.sol";
+import {IPriceOracle} from "../oracle/i-price-oracle.sol";
 import {PolicyEngine} from "../policy/policy-engine.sol";
 import {PositionManager} from "../core/position-manager.sol";
 import {LiquidityPool} from "../core/liquidity-pool.sol";
+import {IERC20} from "../interfaces/i-erc20.sol";
 
 contract LoanManager is RoleManager {
     using SafeErc20 for address;
@@ -215,9 +216,10 @@ contract LoanManager is RoleManager {
     }
 
     function _valueOf(address asset, uint256 amount) internal view returns (uint256) {
-        uint256 price = PriceOracle(priceOracle).getPrice(asset);
+        uint256 price = IPriceOracle(priceOracle).getPrice(asset);
         if (price == 0) revert PriceUnavailable();
-        return (amount * price) / 1e18;
+        uint8 decimals = IERC20(asset).decimals();
+        return (amount * price) / (10 ** decimals);
     }
 
     function _validateOpenParams(

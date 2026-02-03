@@ -9,12 +9,13 @@ import {LiquidityPool} from "../src/core/liquidity-pool.sol";
 import {LoanManager} from "../src/core/loan-manager.sol";
 import {PositionManager} from "../src/core/position-manager.sol";
 import {PolicyEngine} from "../src/policy/policy-engine.sol";
-import {PriceOracle} from "../src/oracle/price-oracle.sol";
+import {ChainlinkPriceOracle} from "../src/oracle/chainlink-price-oracle.sol";
 import {RoleManager} from "../src/access/role-manager.sol";
 import {RiskEngine} from "../src/risk/risk-engine.sol";
 import {LiquidationEngine} from "../src/risk/liquidation-engine.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockChainlinkAggregatorV3} from "./mocks/MockChainlinkAggregatorV3.sol";
 
 interface Vm {
     function addr(uint256 privateKey) external returns (address);
@@ -231,13 +232,15 @@ contract TabbySecuredLoansTest is TestBase {
         vm.stopPrank();
 
         PolicyEngine policy = new PolicyEngine(admin);
-        PriceOracle oracle = new PriceOracle(admin);
+        ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(admin);
+        MockChainlinkAggregatorV3 collateralFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        MockChainlinkAggregatorV3 debtFeed = new MockChainlinkAggregatorV3(8, 1e8);
         PositionManager positions = new PositionManager(admin);
         LoanManager loans = new LoanManager(admin);
 
         policy.setPolicy(address(collateral), PolicyEngine.Policy({maxLtvBps: 8000, liquidationThresholdBps: 8500, interestRateBps: 0, enabled: true}));
-        oracle.setPrice(address(collateral), 1e18);
-        oracle.setPrice(address(debt), 1e18);
+        oracle.setFeed(address(collateral), address(collateralFeed), 0, true);
+        oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
 
@@ -319,15 +322,17 @@ contract TabbyLiquidationEngineTest is TestBase {
         vm.stopPrank();
 
         PolicyEngine policy = new PolicyEngine(admin);
-        PriceOracle oracle = new PriceOracle(admin);
+        ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(admin);
+        MockChainlinkAggregatorV3 collateralFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        MockChainlinkAggregatorV3 debtFeed = new MockChainlinkAggregatorV3(8, 1e8);
         PositionManager positions = new PositionManager(admin);
         LoanManager loans = new LoanManager(admin);
         RiskEngine risk = new RiskEngine();
         LiquidationEngine liq = new LiquidationEngine(admin);
 
         policy.setPolicy(address(collateral), PolicyEngine.Policy({maxLtvBps: 8000, liquidationThresholdBps: 8500, interestRateBps: 0, enabled: true}));
-        oracle.setPrice(address(collateral), 1e18);
-        oracle.setPrice(address(debt), 1e18);
+        oracle.setFeed(address(collateral), address(collateralFeed), 0, true);
+        oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
 
@@ -352,7 +357,7 @@ contract TabbyLiquidationEngineTest is TestBase {
         uint256 positionId = loans.loanPositions(loanId);
         assertEq(pool.totalOutstandingPrincipal(), 100 ether, "outstanding before");
 
-        oracle.setPrice(address(collateral), 4e17);
+        collateralFeed.setAnswer(4e7);
 
         address liquidator = address(0xCAFE);
         debt.mint(liquidator, 100 ether);

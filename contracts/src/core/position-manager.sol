@@ -4,8 +4,9 @@ pragma solidity ^0.8.27;
 import {RoleManager} from "../access/role-manager.sol";
 import {WalletRegistry} from "../access/wallet-registry.sol";
 import {SafeErc20} from "../libraries/safe-erc20.sol";
-import {PriceOracle} from "../oracle/price-oracle.sol";
+import {IPriceOracle} from "../oracle/i-price-oracle.sol";
 import {PolicyEngine} from "../policy/policy-engine.sol";
+import {IERC20} from "../interfaces/i-erc20.sol";
 
 contract PositionManager is RoleManager {
     using SafeErc20 for address;
@@ -185,12 +186,14 @@ contract PositionManager is RoleManager {
 
     function _ensureHealthy(Position storage position, uint256 collateralAmount) internal view {
         if (policyEngine == address(0) || priceOracle == address(0)) revert EnginesNotSet();
-        uint256 collateralPrice = PriceOracle(priceOracle).getPrice(position.collateralAsset);
-        uint256 debtPrice = PriceOracle(priceOracle).getPrice(position.debtAsset);
+        uint256 collateralPrice = IPriceOracle(priceOracle).getPrice(position.collateralAsset);
+        uint256 debtPrice = IPriceOracle(priceOracle).getPrice(position.debtAsset);
         if (collateralPrice == 0 || debtPrice == 0) revert PriceUnavailable();
 
-        uint256 collateralValue = (collateralAmount * collateralPrice) / 1e18;
-        uint256 debtValue = (position.debt * debtPrice) / 1e18;
+        uint8 collateralDecimals = IERC20(position.collateralAsset).decimals();
+        uint8 debtDecimals = IERC20(position.debtAsset).decimals();
+        uint256 collateralValue = (collateralAmount * collateralPrice) / (10 ** collateralDecimals);
+        uint256 debtValue = (position.debt * debtPrice) / (10 ** debtDecimals);
         bool ok = PolicyEngine(policyEngine).validateBorrow(position.collateralAsset, collateralValue, debtValue);
         if (!ok) revert CollateralTooLow();
     }
