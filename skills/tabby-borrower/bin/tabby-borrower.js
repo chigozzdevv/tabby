@@ -3,8 +3,43 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+
+function parseDotEnv(content) {
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+async function loadLocalEnv() {
+  const envPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env");
+  try {
+    const raw = await fs.readFile(envPath, "utf8");
+    parseDotEnv(raw);
+  } catch {
+    return;
+  }
+}
+
+await loadLocalEnv();
 
 function usage() {
   console.log(

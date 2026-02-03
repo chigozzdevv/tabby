@@ -28,6 +28,7 @@ This repo includes a small helper CLI under `skills/tabby-borrower/`:
 ```bash
 cd skills/tabby-borrower
 npm install
+cp .env.example .env
 
 # Create a borrower wallet (saved to ~/.config/tabby-borrower/wallet.json)
 tabby-borrower init-wallet
@@ -54,4 +55,3 @@ TABBY_API_BASE_URL=http://localhost:3000 tabby-borrower status --loan-id 1
   - `GET /public/monitoring/gas-loans/:loanId`
   - `GET /public/activity?loanId=:loanId`
   to report status back to Telegram (OpenClaw will deliver your text).
-
