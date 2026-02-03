@@ -4,6 +4,7 @@ import { getDb } from "@/db/mongodb.js";
 import { env } from "@/config/env.js";
 import { HttpError } from "@/shared/http-errors.js";
 import { asAddress, chain, publicClient, tabbyAccount, walletClient } from "@/shared/viem.js";
+import { recordActivityEvent } from "@/features/activity/activity.service.js";
 import type {
   GasLoanExecuteRequest,
   GasLoanExecuteResponse,
@@ -253,6 +254,24 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
     createdAt: new Date(),
   });
 
+  await recordActivityEvent({
+    type: "gas-loan.offer-created",
+    dedupeKey: `gas-loan.offer-created:${borrower.toLowerCase()}:${nonce}`,
+    agentId,
+    borrower: borrower.toLowerCase(),
+    payload: {
+      borrower,
+      nonce,
+      principalWei: principal.toString(),
+      interestBps: input.interestBps,
+      issuedAt,
+      dueAt,
+      expiresAt,
+      action: input.action,
+      metadataHash,
+    },
+  });
+
   return {
     offer: {
       borrower,
@@ -302,6 +321,13 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
 
   if (offerDoc.expiresAt <= now) {
     await offers.updateOne({ _id: offerDoc._id }, { $set: { status: "expired" } });
+    await recordActivityEvent({
+      type: "gas-loan.offer-expired",
+      dedupeKey: `gas-loan.offer-expired:${offerDoc.borrower}:${offerDoc.nonce}`,
+      agentId,
+      borrower: offerDoc.borrower,
+      payload: { borrower, nonce: offerDoc.nonce, expiresAt: offerDoc.expiresAt },
+    });
     throw new HttpError(410, "offer-expired", "Offer expired");
   }
 
@@ -354,6 +380,16 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
     { _id: offerDoc._id },
     { $set: { status: "executed", txHash: txHash, loanId: loanId, executedAt: new Date() } }
   );
+
+  await recordActivityEvent({
+    type: "gas-loan.executed",
+    dedupeKey: `gas-loan.executed:${txHash}`,
+    agentId,
+    borrower: borrower.toLowerCase(),
+    loanId,
+    txHash,
+    payload: { borrower, nonce: offerDoc.nonce, loanId },
+  });
 
   return { txHash, loanId };
 }

@@ -19,8 +19,12 @@ npm run dev
 
 - `GET /health`
 - `GET /auth/me` (requires `X-Moltbook-Identity`)
+- `GET /activity` (requires `X-Moltbook-Identity`)
+- `GET /public/activity?borrower=0x...` (public)
 - `GET /liquidity/pools`
 - `POST /loans/gas/offer` (requires `X-Moltbook-Identity`)
 - `POST /loans/gas/execute` (requires `X-Moltbook-Identity`)
 - `GET /monitoring/gas-loans` (requires `X-Moltbook-Identity`)
 - `GET /monitoring/gas-loans/:loanId` (requires `X-Moltbook-Identity`)
+- `GET /public/monitoring/gas-loans?borrower=0x...` (public)
+- `GET /public/monitoring/gas-loans/:loanId` (public)

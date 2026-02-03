@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { requireMoltbookAuth } from "@/features/auth/auth.middleware.js";
 import { getMe } from "@/features/auth/auth.controller.js";
 

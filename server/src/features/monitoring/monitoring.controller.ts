@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AuthContext } from "@/features/auth/auth.types.js";
-import { getGasLoanDetails, listGasLoans } from "@/features/monitoring/monitoring.service.js";
+import { getGasLoanDetails, getPublicGasLoanDetails, listGasLoans, listPublicGasLoans } from "@/features/monitoring/monitoring.service.js";
 
 export async function getGasLoans(request: FastifyRequest, reply: FastifyReply) {
   const auth = (request as unknown as { auth: AuthContext }).auth;
@@ -18,3 +18,13 @@ export async function getGasLoanById(request: FastifyRequest, reply: FastifyRepl
   return reply.send({ ok: true, data });
 }
 
+export async function getPublicGasLoans(request: FastifyRequest, reply: FastifyReply) {
+  const data = await listPublicGasLoans(request.query);
+  return reply.send({ ok: true, data });
+}
+
+export async function getPublicGasLoanById(request: FastifyRequest, reply: FastifyReply) {
+  const { loanId } = loanIdParamsSchema.parse(request.params);
+  const data = await getPublicGasLoanDetails(loanId);
+  return reply.send({ ok: true, data });
+}

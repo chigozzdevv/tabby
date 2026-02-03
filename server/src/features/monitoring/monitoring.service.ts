@@ -4,9 +4,15 @@ import { asAddress, publicClient } from "@/shared/viem.js";
 import { HttpError } from "@/shared/http-errors.js";
 import { env } from "@/config/env.js";
 import type { GasLoanOfferDoc } from "@/features/loans/loans.model.js";
-import type { GasLoanDetails, GasLoanOfferSummary } from "@/features/monitoring/monitoring.types.js";
+import type { GasLoanDetails, GasLoanOfferSummary, PublicGasLoanDetails } from "@/features/monitoring/monitoring.types.js";
 
 const listQuerySchema = z.object({
+  status: z.enum(["issued", "expired", "executed", "canceled"]).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+const publicListQuerySchema = z.object({
+  borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   status: z.enum(["issued", "expired", "executed", "canceled"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -69,20 +75,26 @@ export async function listGasLoans(agentId: string, query: unknown): Promise<Gas
   return docs.map(toSummary);
 }
 
-export async function getGasLoanDetails(agentId: string, loanId: number): Promise<GasLoanDetails> {
-  if (!Number.isInteger(loanId) || loanId <= 0) throw new HttpError(400, "invalid-loan-id", "loanId must be a positive integer");
+export async function listPublicGasLoans(query: unknown): Promise<GasLoanOfferSummary[]> {
+  const { borrower, status, limit } = publicListQuerySchema.parse(query);
 
   const db = getDb();
   const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
-  const doc = await offers.findOne({ agentId, loanId });
-  if (!doc) throw new HttpError(404, "not-found", "gas loan not found");
 
-  const offer = toSummary(doc);
+  const filter: Record<string, unknown> = { borrower: borrower.toLowerCase() };
+  if (status) filter.status = status;
+
+  const docs = await offers.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+  return docs.map(toSummary);
+}
+
+async function getOnchainGasLoanState(loanId: number) {
   const alm = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+  const id = BigInt(loanId);
 
   const [state, outstanding] = await Promise.all([
-    publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "loans", args: [BigInt(loanId)] }),
-    publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "outstanding", args: [BigInt(loanId)] }),
+    publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "loans", args: [id] }),
+    publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "outstanding", args: [id] }),
   ]);
 
   const [
@@ -99,20 +111,41 @@ export async function getGasLoanDetails(agentId: string, loanId: number): Promis
   ] = state;
 
   return {
-    offer,
-    onchain: {
-      borrower,
-      principalWei: principal.toString(),
-      rateBps: Number(rateBps),
-      openedAt: Number(openedAt),
-      dueAt: Number(dueAt),
-      lastAccruedAt: Number(lastAccruedAt),
-      accruedInterestWei: accruedInterest.toString(),
-      totalRepaidWei: totalRepaid.toString(),
-      closed,
-      defaulted,
-      outstandingWei: outstanding.toString(),
-    },
+    borrower,
+    principalWei: principal.toString(),
+    rateBps: Number(rateBps),
+    openedAt: Number(openedAt),
+    dueAt: Number(dueAt),
+    lastAccruedAt: Number(lastAccruedAt),
+    accruedInterestWei: accruedInterest.toString(),
+    totalRepaidWei: totalRepaid.toString(),
+    closed,
+    defaulted,
+    outstandingWei: outstanding.toString(),
   };
 }
 
+export async function getGasLoanDetails(agentId: string, loanId: number): Promise<GasLoanDetails> {
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new HttpError(400, "invalid-loan-id", "loanId must be a positive integer");
+
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+  const doc = await offers.findOne({ agentId, loanId });
+  if (!doc) throw new HttpError(404, "not-found", "gas loan not found");
+
+  const offer = toSummary(doc);
+  const onchain = await getOnchainGasLoanState(loanId);
+  return { offer, onchain };
+}
+
+export async function getPublicGasLoanDetails(loanId: number): Promise<PublicGasLoanDetails> {
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new HttpError(400, "invalid-loan-id", "loanId must be a positive integer");
+
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+  const doc = await offers.findOne({ loanId });
+  const offer = doc ? toSummary(doc) : undefined;
+  const onchain = await getOnchainGasLoanState(loanId);
+
+  return { offer, onchain };
+}

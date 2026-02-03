@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { z } from "zod";
 
+const booleanString = z.enum(["true", "false"]);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -19,7 +21,11 @@ const envSchema = z.object({
   MOLTBOOK_AUDIENCE: z.string().optional(),
 
   GOVERNANCE: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+
+  ACTIVITY_SYNC_ENABLED: booleanString.optional().default("true").transform((v) => v === "true"),
+  ACTIVITY_START_BLOCK: z.coerce.number().int().nonnegative().optional(),
+  ACTIVITY_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),
+  ACTIVITY_CONFIRMATIONS: z.coerce.number().int().min(0).max(100).default(5),
 });
 
 export const env = envSchema.parse(process.env);
-

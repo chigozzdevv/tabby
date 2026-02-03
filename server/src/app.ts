@@ -5,6 +5,7 @@ import { env } from "@/config/env.js";
 import { logger } from "@/config/logger.js";
 import { connectMongo } from "@/db/mongodb.js";
 import { registerAuthRoutes } from "@/features/auth/auth.routes.js";
+import { registerActivityRoutes } from "@/features/activity/activity.routes.js";
 import { registerLoansRoutes } from "@/features/loans/loans.routes.js";
 import { registerLiquidityRoutes } from "@/features/liquidity/liquidity.routes.js";
 import { registerMonitoringRoutes } from "@/features/monitoring/monitoring.routes.js";
@@ -26,6 +27,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.get("/health", async () => ({ ok: true }));
 
   registerAuthRoutes(app);
+  registerActivityRoutes(app);
   registerLoansRoutes(app);
   registerLiquidityRoutes(app);
   registerMonitoringRoutes(app);

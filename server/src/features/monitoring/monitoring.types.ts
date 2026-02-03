@@ -31,3 +31,19 @@ export type GasLoanDetails = {
   };
 };
 
+export type PublicGasLoanDetails = {
+  offer?: GasLoanOfferSummary;
+  onchain: {
+    borrower: `0x${string}`;
+    principalWei: string;
+    rateBps: number;
+    openedAt: number;
+    dueAt: number;
+    lastAccruedAt: number;
+    accruedInterestWei: string;
+    totalRepaidWei: string;
+    closed: boolean;
+    defaulted: boolean;
+    outstandingWei: string;
+  };
+};
