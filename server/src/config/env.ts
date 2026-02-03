@@ -22,6 +22,11 @@ const envSchema = z.object({
 
   GOVERNANCE: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
 
+  GAS_LOAN_ALLOW_MULTIPLE_ACTIVE: booleanString.optional().default("false").transform((v) => v === "true"),
+  REPAY_GAS_ACTION_ID: z.coerce.number().int().min(0).max(255).default(255),
+  REPAY_GAS_MAX_PRINCIPAL_WEI: z.string().regex(/^\d+$/).default("10000000000000000"),
+  REPAY_GAS_MAX_DURATION_SECONDS: z.coerce.number().int().positive().default(3600),
+
   ACTIVITY_SYNC_ENABLED: booleanString.optional().default("true").transform((v) => v === "true"),
   ACTIVITY_START_BLOCK: z.coerce.number().int().nonnegative().optional(),
   ACTIVITY_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),

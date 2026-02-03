@@ -28,3 +28,9 @@ npm run dev
 - `GET /monitoring/gas-loans/:loanId` (requires `X-Moltbook-Identity`)
 - `GET /public/monitoring/gas-loans?borrower=0x...` (public)
 - `GET /public/monitoring/gas-loans/:loanId` (public)
+
+## Gas-loan actions
+
+`action` is an application-level integer (0-255) gated by the onchain borrower policy bitmask.
+
+- `255`: reserved for `repay-gas` topups (small loans to ensure the borrower can submit a `repay()` transaction).

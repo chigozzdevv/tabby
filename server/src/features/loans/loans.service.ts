@@ -47,6 +47,13 @@ const agentLoanManagerAbi = [
   },
   {
     type: "function",
+    name: "outstanding",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "executeLoan",
     stateMutability: "nonpayable",
     inputs: [
@@ -103,6 +110,33 @@ const principalSchema = z.string().regex(/^\d+$/);
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+async function getActiveGasLoanIds(borrower: `0x${string}`): Promise<number[]> {
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+
+  const docs = await offers
+    .find({ borrower: borrower.toLowerCase(), status: "executed", loanId: { $exists: true } }, { projection: { loanId: 1 } })
+    .toArray();
+
+  const ids = Array.from(new Set(docs.map((d) => d.loanId).filter((id): id is number => typeof id === "number" && id > 0)));
+  if (ids.length === 0) return [];
+
+  const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+  const checks = await Promise.all(
+    ids.map(async (id) => {
+      const outstanding = await publicClient.readContract({
+        address: agentLoanManager,
+        abi: agentLoanManagerAbi,
+        functionName: "outstanding",
+        args: [BigInt(id)],
+      });
+      return { id, outstanding };
+    })
+  );
+
+  return checks.filter((c) => c.outstanding > 0n).map((c) => c.id);
 }
 
 async function getNextNonce(borrower: string): Promise<number> {
@@ -198,6 +232,25 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
   await ensureSignerMatchesContract();
   await enforceOnchainPolicy(borrower, input.interestBps, principal, input.durationSeconds, input.action);
   await ensurePoolLiquidity(principal);
+
+  if (!env.GAS_LOAN_ALLOW_MULTIPLE_ACTIVE) {
+    const activeLoanIds = await getActiveGasLoanIds(borrower);
+    const hasActive = activeLoanIds.length > 0;
+
+    if (input.action === env.REPAY_GAS_ACTION_ID) {
+      if (!hasActive) {
+        throw new HttpError(409, "no-active-loan", "repay-gas is only allowed when there is an active gas loan");
+      }
+      if (principal > BigInt(env.REPAY_GAS_MAX_PRINCIPAL_WEI)) {
+        throw new HttpError(403, "repay-gas-too-large", "repay-gas principal too large");
+      }
+      if (input.durationSeconds > env.REPAY_GAS_MAX_DURATION_SECONDS) {
+        throw new HttpError(403, "repay-gas-too-long", "repay-gas duration too long");
+      }
+    } else if (hasActive) {
+      throw new HttpError(409, "active-loan", "borrower has an active gas loan");
+    }
+  }
 
   const offer = {
     borrower,
