@@ -20,6 +20,7 @@ Borrower workflow for Tabby gas-loans on Monad:
 This skill uses a local wallet file:
 
 - `~/.config/tabby-borrower/wallet.json` (chmod 600)
+- `~/.config/tabby-borrower/state.json` (last known chain/contract + last loan metadata)
 
 ## CLI helper (optional)
 
@@ -43,8 +44,20 @@ tabby-borrower request-gas-loan \
   --duration-seconds 3600 \
   --action 1
 
+# Repay onchain (sends a tx from the borrower wallet)
+MONAD_CHAIN_ID=10143 MONAD_RPC_URL=https://testnet-rpc.monad.xyz \
+tabby-borrower repay-gas-loan --loan-id 1
+
 # Public status (no auth)
 TABBY_API_BASE_URL=http://localhost:3000 tabby-borrower status --loan-id 1
+```
+
+`request-gas-loan` caches `chainId`, `agentLoanManager`, and the last executed loan metadata to `~/.config/tabby-borrower/state.json`.
+
+You can check the cached due time:
+
+```bash
+tabby-borrower next-due
 ```
 
 ## API usage notes for the agent
@@ -55,3 +68,15 @@ TABBY_API_BASE_URL=http://localhost:3000 tabby-borrower status --loan-id 1
   - `GET /public/monitoring/gas-loans/:loanId`
   - `GET /public/activity?loanId=:loanId`
   to report status back to Telegram (OpenClaw will deliver your text).
+
+## Due checks (heartbeat)
+
+Onchain does not push notifications. The due time is `AgentLoanManager.loans(loanId).dueAt`.
+
+Due checks run when the agent is invoked (chat-driven), or from a periodic trigger (OpenClaw hooks/heartbeat).
+
+Helper commands:
+
+- `tabby-borrower next-due` (cached)
+- `tabby-borrower status --loan-id <id>` (live)
+- `tabby-borrower repay-gas-loan --loan-id <id>` (repay tx)

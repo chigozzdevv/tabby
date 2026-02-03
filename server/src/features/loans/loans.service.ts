@@ -5,6 +5,7 @@ import { env } from "@/config/env.js";
 import { HttpError } from "@/shared/http-errors.js";
 import { asAddress, chain, publicClient, tabbyAccount, walletClient } from "@/shared/viem.js";
 import { recordActivityEvent } from "@/features/activity/activity.service.js";
+import type { ActivityEventDoc } from "@/features/activity/activity.model.js";
 import type {
   GasLoanExecuteRequest,
   GasLoanExecuteResponse,
@@ -116,8 +117,14 @@ async function getActiveGasLoanIds(borrower: `0x${string}`): Promise<number[]> {
   const db = getDb();
   const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
 
+  const filter: Record<string, unknown> = {
+    borrower: borrower.toLowerCase(),
+    status: "executed",
+    loanId: { $exists: true },
+  };
+
   const docs = await offers
-    .find({ borrower: borrower.toLowerCase(), status: "executed", loanId: { $exists: true } }, { projection: { loanId: 1 } })
+    .find(filter, { projection: { loanId: 1 } })
     .toArray();
 
   const ids = Array.from(new Set(docs.map((d) => d.loanId).filter((id): id is number => typeof id === "number" && id > 0)));
@@ -137,6 +144,36 @@ async function getActiveGasLoanIds(borrower: `0x${string}`): Promise<number[]> {
   );
 
   return checks.filter((c) => c.outstanding > 0n).map((c) => c.id);
+}
+
+async function hasActiveGasLoanByAction(borrower: `0x${string}`, action: number): Promise<boolean> {
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+
+  const docs = await offers
+    .find(
+      { borrower: borrower.toLowerCase(), status: "executed", action, loanId: { $exists: true } },
+      { projection: { loanId: 1 } }
+    )
+    .toArray();
+
+  const ids = Array.from(new Set(docs.map((d) => d.loanId).filter((id): id is number => typeof id === "number" && id > 0)));
+  if (ids.length === 0) return false;
+
+  const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+  const checks = await Promise.all(
+    ids.map(async (id) => {
+      const outstanding = await publicClient.readContract({
+        address: agentLoanManager,
+        abi: agentLoanManagerAbi,
+        functionName: "outstanding",
+        args: [BigInt(id)],
+      });
+      return outstanding > 0n;
+    })
+  );
+
+  return checks.some(Boolean);
 }
 
 async function getNextNonce(borrower: string): Promise<number> {
@@ -213,6 +250,13 @@ async function ensureSignerMatchesContract() {
   }
 }
 
+async function ensureBorrowerNotDefaulted(borrower: `0x${string}`) {
+  const db = getDb();
+  const events = db.collection<ActivityEventDoc>("activity-events");
+  const doc = await events.findOne({ borrower: borrower.toLowerCase(), type: "gas-loan.defaulted" }, { projection: { _id: 1 } });
+  if (doc) throw new HttpError(403, "borrower-defaulted", "Borrower has a defaulted gas loan");
+}
+
 export async function createGasLoanOffer(agentId: string, input: GasLoanOfferRequest): Promise<GasLoanOfferResponse> {
   const borrower = asAddress(input.borrower);
   principalSchema.parse(input.principalWei);
@@ -220,12 +264,13 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
   if (!Number.isFinite(input.durationSeconds) || input.durationSeconds <= 0) throw new HttpError(400, "invalid-duration", "durationSeconds invalid");
   if (!Number.isFinite(input.action) || input.action < 0) throw new HttpError(400, "invalid-action", "action invalid");
 
+  await ensureBorrowerNotDefaulted(borrower);
+
   const principal = BigInt(input.principalWei);
   const issuedAt = nowSeconds();
   const dueAt = issuedAt + Math.floor(input.durationSeconds);
   const offerTtl = input.offerTtlSeconds ?? 300;
   const expiresAt = issuedAt + Math.max(1, Math.floor(offerTtl));
-  const nonce = await getNextNonce(borrower.toLowerCase());
 
   const metadataHash = (input.metadataHash ?? "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
 
@@ -241,6 +286,10 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
       if (!hasActive) {
         throw new HttpError(409, "no-active-loan", "repay-gas is only allowed when there is an active gas loan");
       }
+      const hasActiveRepayGas = await hasActiveGasLoanByAction(borrower, env.REPAY_GAS_ACTION_ID);
+      if (hasActiveRepayGas) {
+        throw new HttpError(409, "repay-gas-active", "repay-gas already active for this borrower");
+      }
       if (principal > BigInt(env.REPAY_GAS_MAX_PRINCIPAL_WEI)) {
         throw new HttpError(403, "repay-gas-too-large", "repay-gas principal too large");
       }
@@ -251,6 +300,8 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
       throw new HttpError(409, "active-loan", "borrower has an active gas loan");
     }
   }
+
+  const nonce = await getNextNonce(borrower.toLowerCase());
 
   const offer = {
     borrower,

@@ -9,6 +9,7 @@ import { registerActivityRoutes } from "@/features/activity/activity.routes.js";
 import { registerLoansRoutes } from "@/features/loans/loans.routes.js";
 import { registerLiquidityRoutes } from "@/features/liquidity/liquidity.routes.js";
 import { registerMonitoringRoutes } from "@/features/monitoring/monitoring.routes.js";
+import { registerPublicConfigRoutes } from "@/features/public-config/public-config.routes.js";
 import { HttpError } from "@/shared/http-errors.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -31,6 +32,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerLoansRoutes(app);
   registerLiquidityRoutes(app);
   registerMonitoringRoutes(app);
+  registerPublicConfigRoutes(app);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {

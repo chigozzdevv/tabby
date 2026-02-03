@@ -7,6 +7,27 @@ import { getActivityCursor, recordActivityEvent, setActivityCursor } from "@/fea
 
 const cursorKey = "agent-loan-manager";
 
+const agentLoanManagerAbi = [
+  {
+    type: "function",
+    name: "loans",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      { name: "borrower", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "rateBps", type: "uint256" },
+      { name: "openedAt", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+      { name: "lastAccruedAt", type: "uint256" },
+      { name: "accruedInterest", type: "uint256" },
+      { name: "totalRepaid", type: "uint256" },
+      { name: "closed", type: "bool" },
+      { name: "defaulted", type: "bool" },
+    ],
+  },
+] as const;
+
 const loanExecutedEventAbi = [
   {
     type: "event",
@@ -46,6 +67,23 @@ const loanDefaultedEventAbi = [
     ],
   },
 ] as const;
+
+async function getOnchainBorrower(loanId: number): Promise<string | undefined> {
+  try {
+    const alm = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+    const state = await publicClient.readContract({
+      address: alm,
+      abi: agentLoanManagerAbi,
+      functionName: "loans",
+      args: [BigInt(loanId)],
+    });
+    const borrower = state?.[0];
+    if (typeof borrower !== "string" || !borrower.startsWith("0x")) return undefined;
+    return borrower.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
 
 async function fetchBlockTimestamps(blockNumbers: bigint[]) {
   const unique = Array.from(new Set(blockNumbers.map((b) => b.toString()))).map((s) => BigInt(s));
@@ -173,11 +211,13 @@ async function syncOnce() {
       ) {
         continue;
       }
+
+      const borrower = (ctx?.borrower ?? (await getOnchainBorrower(loanId))) as string | undefined;
       await recordActivityEvent({
         type: "gas-loan.repaid",
         dedupeKey: `gas-loan.repaid:${txHash}:${logIndex}`,
         agentId: ctx?.agentId,
-        borrower: ctx?.borrower,
+        borrower,
         loanId,
         txHash,
         blockNumber,
@@ -195,11 +235,13 @@ async function syncOnce() {
 
     const args = item.log.args;
     if (args.principalWrittenOff === undefined) continue;
+
+    const borrower = (ctx?.borrower ?? (await getOnchainBorrower(loanId))) as string | undefined;
     await recordActivityEvent({
       type: "gas-loan.defaulted",
       dedupeKey: `gas-loan.defaulted:${txHash}:${logIndex}`,
       agentId: ctx?.agentId,
-      borrower: ctx?.borrower,
+      borrower,
       loanId,
       txHash,
       blockNumber,
