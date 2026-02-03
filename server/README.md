@@ -22,6 +22,12 @@ npm run dev
 - `GET /activity` (requires `X-Moltbook-Identity`)
 - `GET /public/activity?borrower=0x...` (public)
 - `GET /liquidity/pools`
+- `GET /liquidity/native/position?account=0x...`
+- `GET /liquidity/native/quote/deposit?amountWei=...`
+- `GET /liquidity/native/quote/withdraw?shares=...`
+- `GET /liquidity/secured/position?account=0x...` (requires `SECURED_POOL_ADDRESS`)
+- `GET /liquidity/secured/quote/deposit?amountWei=...` (requires `SECURED_POOL_ADDRESS`)
+- `GET /liquidity/secured/quote/withdraw?shares=...` (requires `SECURED_POOL_ADDRESS`)
 - `POST /loans/gas/offer` (requires `X-Moltbook-Identity`)
 - `POST /loans/gas/execute` (requires `X-Moltbook-Identity`)
 - `GET /monitoring/gas-loans` (requires `X-Moltbook-Identity`)

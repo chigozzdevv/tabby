@@ -15,6 +15,7 @@ const envSchema = z.object({
   RPC_URL: z.string().url(),
   CHAIN_ID: z.coerce.number().int().positive().default(10143),
   AGENT_LOAN_MANAGER_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  SECURED_POOL_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
   TABBY_PRIVATE_KEY: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
 
   MOLTBOOK_BASE_URL: z.string().url().default("https://www.moltbook.com/api/v1"),
