@@ -20,6 +20,7 @@ contract AgentLoanManager is RoleManager {
     error LoanClosed();
     error NotDue();
     error NothingToRepay();
+    error RefundFailed();
 
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -177,9 +178,11 @@ contract AgentLoanManager is RoleManager {
 
         uint256 outstandingAmount = loan.principal + loan.accruedInterest;
         if (outstandingAmount == 0) revert NothingToRepay();
-        if (msg.value > outstandingAmount) revert InvalidAmount();
 
-        uint256 remaining = msg.value;
+        uint256 repayAmount = msg.value > outstandingAmount ? outstandingAmount : msg.value;
+        uint256 refund = msg.value - repayAmount;
+
+        uint256 remaining = repayAmount;
 
         uint256 interestPaid = 0;
         if (loan.accruedInterest > 0) {
@@ -195,14 +198,19 @@ contract AgentLoanManager is RoleManager {
             remaining -= principalPaid;
         }
 
-        loan.totalRepaid += msg.value;
+        loan.totalRepaid += repayAmount;
 
-        pool.repay{value: msg.value}(principalPaid);
+        pool.repay{value: repayAmount}(principalPaid);
 
-        emit LoanRepaid(loanId, msg.sender, msg.value, principalPaid, interestPaid);
+        emit LoanRepaid(loanId, msg.sender, repayAmount, principalPaid, interestPaid);
 
         if (loan.principal == 0 && loan.accruedInterest == 0) {
             loan.closed = true;
+        }
+
+        if (refund > 0) {
+            (bool ok, ) = msg.sender.call{value: refund}("");
+            if (!ok) revert RefundFailed();
         }
     }
 

@@ -18,7 +18,16 @@ const envSchema = z.object({
   SECURED_POOL_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
   TABBY_PRIVATE_KEY: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
 
-  MOLTBOOK_BASE_URL: z.string().url().default("https://www.moltbook.com/api/v1"),
+  MOLTBOOK_BASE_URL: z
+    .string()
+    .url()
+    .default("https://www.moltbook.com/api/v1")
+    .transform((value) => {
+      const url = new URL(value);
+      if (url.hostname === "moltbook.com") url.hostname = "www.moltbook.com";
+      return url.toString().replace(/\/$/, "");
+    }),
+  MOLTBOOK_APP_KEY: z.string().min(1),
   MOLTBOOK_AUDIENCE: z.string().optional(),
 
   GOVERNANCE: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),

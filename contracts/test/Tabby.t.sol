@@ -16,6 +16,7 @@ import {LiquidationEngine} from "../src/risk/liquidation-engine.sol";
 import {PoolShareRewards} from "../src/rewards/pool-share-rewards.sol";
 
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockERC20StrictApprove} from "./mocks/MockERC20StrictApprove.sol";
 import {MockChainlinkAggregatorV3} from "./mocks/MockChainlinkAggregatorV3.sol";
 
 interface Vm {
@@ -106,6 +107,65 @@ contract TabbyAgentLoansTest is TestBase {
         loanManager.repay{value: 2 ether}(loanId);
         assertEq(pool.totalOutstandingPrincipal(), 0, "outstanding cleared");
         assertEq(pool.totalAssets(), 101 ether, "pool earned interest");
+    }
+
+    function test_agentGasLoans_repay_allowsOverpay_andRefundsExtra() external {
+        uint256 tabbyPk = 0xA11CE;
+        uint256 borrowerPk = 0xB0B0;
+        uint256 ownerPk = 0x0B0B;
+
+        address tabbySigner = vm.addr(tabbyPk);
+        address borrower = vm.addr(borrowerPk);
+        address owner = vm.addr(ownerPk);
+
+        BorrowerPolicyRegistry registry = new BorrowerPolicyRegistry();
+        NativeLiquidityPool pool = new NativeLiquidityPool(address(this));
+
+        AgentLoanManager loanManager = new AgentLoanManager(address(this), address(pool), address(registry), tabbySigner);
+        pool.grantRole(pool.BORROW_ROLE(), address(loanManager));
+        pool.grantRole(pool.REPAY_ROLE(), address(loanManager));
+        pool.grantRole(pool.RISK_ROLE(), address(loanManager));
+
+        uint256 allowedActions = uint256(1) << 1;
+        vm.prank(owner);
+        registry.registerBorrower(borrower, 2 ether, 20000, 400 days, allowedActions);
+
+        address lp = address(0x1111);
+        vm.deal(lp, 100 ether);
+        vm.prank(lp);
+        pool.deposit{value: 100 ether}();
+
+        AgentLoanManager.LoanOffer memory offer = AgentLoanManager.LoanOffer({
+            borrower: borrower,
+            principal: 1 ether,
+            interestBps: 10000,
+            dueAt: block.timestamp + 365 days,
+            nonce: 1,
+            issuedAt: block.timestamp,
+            expiresAt: block.timestamp + 1 hours,
+            action: 1,
+            metadataHash: keccak256("deploy")
+        });
+
+        bytes32 digest = loanManager.offerDigest(offer);
+        (uint8 vTabby, bytes32 rTabby, bytes32 sTabby) = vm.sign(tabbyPk, digest);
+        (uint8 vBorrower, bytes32 rBorrower, bytes32 sBorrower) = vm.sign(borrowerPk, digest);
+        bytes memory tabbySig = abi.encodePacked(rTabby, sTabby, vTabby);
+        bytes memory borrowerSig = abi.encodePacked(rBorrower, sBorrower, vBorrower);
+
+        vm.deal(borrower, 0);
+        uint256 loanId = loanManager.executeLoan(offer, tabbySig, borrowerSig);
+        assertEq(borrower.balance, 1 ether, "borrower received principal");
+
+        vm.warp(block.timestamp + 365 days);
+        vm.deal(borrower, 3 ether);
+
+        vm.prank(borrower);
+        loanManager.repay{value: 3 ether}(loanId);
+
+        assertEq(pool.totalOutstandingPrincipal(), 0, "outstanding cleared");
+        assertEq(pool.totalAssets(), 101 ether, "pool earned interest");
+        assertEq(borrower.balance, 1 ether, "refund received");
     }
 
     function test_agentGasLoans_policyViolation_reverts() external {
@@ -277,6 +337,119 @@ contract TabbySecuredLoansTest is TestBase {
         uint256 withdrawn = pool.withdraw(lpShares);
         assertEq(withdrawn, 1100 ether, "withdraw amount");
         assertEq(debt.balanceOf(lp), 1100 ether, "lp balance after withdraw");
+    }
+
+    function test_securedLoans_repay_allowsOverpay_takesOnlyOutstanding() external {
+        address admin = address(this);
+
+        MockERC20 debt = new MockERC20("Wrapped MON", "WMON", 18);
+        MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
+
+        LiquidityPool pool = new LiquidityPool(admin, address(debt));
+        address lp = address(0x3333);
+        debt.mint(lp, 1000 ether);
+        vm.startPrank(lp);
+        debt.approve(address(pool), type(uint256).max);
+        pool.deposit(1000 ether);
+        vm.stopPrank();
+
+        PolicyEngine policy = new PolicyEngine(admin);
+        ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(admin);
+        MockChainlinkAggregatorV3 collateralFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        MockChainlinkAggregatorV3 debtFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        PositionManager positions = new PositionManager(admin);
+        LoanManager loans = new LoanManager(admin);
+
+        policy.setPolicy(address(collateral), PolicyEngine.Policy({maxLtvBps: 8000, liquidationThresholdBps: 8500, interestRateBps: 0, enabled: true}));
+        oracle.setFeed(address(collateral), address(collateralFeed), 0, true);
+        oracle.setFeed(address(debt), address(debtFeed), 0, true);
+        positions.setEngines(address(policy), address(oracle));
+        loans.setEngines(address(policy), address(oracle), address(positions));
+
+        positions.grantRole(positions.ADMIN_ROLE(), address(loans));
+        pool.grantRole(pool.BORROW_ROLE(), address(loans));
+        pool.grantRole(pool.REPAY_ROLE(), address(loans));
+        loans.setLiquidityPool(address(pool));
+
+        address borrower = address(0xBEEF);
+        collateral.mint(borrower, 200 ether);
+        vm.startPrank(borrower);
+        collateral.approve(address(positions), type(uint256).max);
+
+        uint256 principal = 100 ether;
+        uint256 dueAt = block.timestamp + 365 days;
+        uint256 loanId = loans.openLoan(address(debt), principal, 10000, address(collateral), 200 ether, dueAt);
+        assertEq(debt.balanceOf(borrower), principal, "borrower received debt");
+
+        debt.mint(borrower, 150 ether);
+        debt.approve(address(loans), type(uint256).max);
+        vm.warp(block.timestamp + 365 days);
+
+        // Caller may request more than outstanding; contract should take only what is owed.
+        loans.repay(loanId, 250 ether);
+        vm.stopPrank();
+
+        assertEq(pool.totalOutstandingPrincipal(), 0, "outstanding cleared");
+        assertEq(pool.totalAssets(), 1100 ether, "pool earned interest");
+        assertEq(debt.balanceOf(borrower), 50 ether, "borrower kept overpay");
+    }
+
+    function test_securedLoans_repay_handlesApproveRequiresZeroTokens() external {
+        address admin = address(this);
+
+        MockERC20StrictApprove debt = new MockERC20StrictApprove("Wrapped MON", "WMON", 18);
+        MockERC20 collateral = new MockERC20("Collateral", "COLL", 18);
+
+        LiquidityPool pool = new LiquidityPool(admin, address(debt));
+        address lp = address(0x3333);
+        debt.mint(lp, 1000 ether);
+        vm.startPrank(lp);
+        debt.approve(address(pool), type(uint256).max);
+        pool.deposit(1000 ether);
+        vm.stopPrank();
+
+        PolicyEngine policy = new PolicyEngine(admin);
+        ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(admin);
+        MockChainlinkAggregatorV3 collateralFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        MockChainlinkAggregatorV3 debtFeed = new MockChainlinkAggregatorV3(8, 1e8);
+        PositionManager positions = new PositionManager(admin);
+        LoanManager loans = new LoanManager(admin);
+
+        policy.setPolicy(address(collateral), PolicyEngine.Policy({maxLtvBps: 8000, liquidationThresholdBps: 8500, interestRateBps: 0, enabled: true}));
+        oracle.setFeed(address(collateral), address(collateralFeed), 0, true);
+        oracle.setFeed(address(debt), address(debtFeed), 0, true);
+        positions.setEngines(address(policy), address(oracle));
+        loans.setEngines(address(policy), address(oracle), address(positions));
+
+        positions.grantRole(positions.ADMIN_ROLE(), address(loans));
+        pool.grantRole(pool.BORROW_ROLE(), address(loans));
+        pool.grantRole(pool.REPAY_ROLE(), address(loans));
+        loans.setLiquidityPool(address(pool));
+
+        address borrower = address(0xBEEF);
+        collateral.mint(borrower, 200 ether);
+        vm.startPrank(borrower);
+        collateral.approve(address(positions), type(uint256).max);
+
+        uint256 principal = 100 ether;
+        uint256 dueAt = block.timestamp + 365 days;
+        uint256 loanId = loans.openLoan(address(debt), principal, 10000, address(collateral), 200 ether, dueAt);
+
+        debt.mint(borrower, 100 ether);
+        debt.approve(address(loans), type(uint256).max);
+        vm.warp(block.timestamp + 365 days);
+        vm.stopPrank();
+
+        // Simulate a pre-existing non-zero allowance from LoanManager to the pool.
+        vm.prank(address(loans));
+        debt.approve(address(pool), 1);
+
+        vm.startPrank(borrower);
+        loans.repay(loanId, 200 ether);
+        vm.stopPrank();
+
+        assertEq(pool.totalOutstandingPrincipal(), 0, "outstanding cleared");
+        assertEq(pool.totalAssets(), 1100 ether, "pool earned interest");
     }
 }
 

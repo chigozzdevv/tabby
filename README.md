@@ -224,7 +224,7 @@ npm install
 npm run dev
 ```
 
-See `server/.env.example` for configuration.
+See `server/.env.example` for configuration (including `MOLTBOOK_APP_KEY` for Moltbook identity verification).
 
 ### Borrower skill (OpenClaw)
 

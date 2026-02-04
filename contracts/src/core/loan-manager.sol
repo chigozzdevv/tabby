@@ -129,11 +129,14 @@ contract LoanManager is RoleManager {
 
         _accrueInterest(loan);
         uint256 outstandingAmount = loan.principal + loan.accruedInterest;
-        if (amount > outstandingAmount) revert InvalidAmount();
+        if (outstandingAmount == 0) revert InvalidAmount();
 
-        loan.asset.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 repayAmount = amount > outstandingAmount ? outstandingAmount : amount;
+        if (repayAmount == 0) revert InvalidAmount();
 
-        uint256 remaining = amount;
+        loan.asset.safeTransferFrom(msg.sender, address(this), repayAmount);
+
+        uint256 remaining = repayAmount;
         if (loan.accruedInterest > 0) {
             uint256 interestPaid = remaining > loan.accruedInterest ? loan.accruedInterest : remaining;
             loan.accruedInterest -= interestPaid;
@@ -153,13 +156,13 @@ contract LoanManager is RoleManager {
 
         if (liquidityPool != address(0)) {
             if (LiquidityPool(liquidityPool).ASSET() != loan.asset) revert InvalidAsset();
-            loan.asset.safeApprove(liquidityPool, amount);
-            LiquidityPool(liquidityPool).repay(principalPaid, amount);
+            _ensureAllowance(loan.asset, liquidityPool, repayAmount);
+            LiquidityPool(liquidityPool).repay(principalPaid, repayAmount);
         } else if (treasury != address(0)) {
-            loan.asset.safeTransfer(treasury, amount);
+            loan.asset.safeTransfer(treasury, repayAmount);
         }
 
-        emit LoanRepaid(loanId, msg.sender, amount);
+        emit LoanRepaid(loanId, msg.sender, repayAmount);
 
         if (loan.principal == 0 && loan.accruedInterest == 0) {
             loan.closed = true;
@@ -265,5 +268,15 @@ contract LoanManager is RoleManager {
         uint256 interest = (loan.principal * loan.interestBps * elapsed) / (10000 * 365 days);
         loan.accruedInterest += interest;
         loan.lastAccruedAt = end;
+    }
+
+    function _ensureAllowance(address asset, address spender, uint256 required) internal {
+        uint256 current = IERC20(asset).allowance(address(this), spender);
+        if (current >= required) return;
+
+        if (current != 0) {
+            asset.safeApprove(spender, 0);
+        }
+        asset.safeApprove(spender, type(uint256).max);
     }
 }

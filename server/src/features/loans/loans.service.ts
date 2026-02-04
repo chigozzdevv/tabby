@@ -55,6 +55,24 @@ const agentLoanManagerAbi = [
   },
   {
     type: "function",
+    name: "loans",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      { name: "borrower", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "rateBps", type: "uint256" },
+      { name: "openedAt", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+      { name: "lastAccruedAt", type: "uint256" },
+      { name: "accruedInterest", type: "uint256" },
+      { name: "totalRepaid", type: "uint256" },
+      { name: "closed", type: "bool" },
+      { name: "defaulted", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
     name: "executeLoan",
     stateMutability: "nonpayable",
     inputs: [
@@ -109,8 +127,60 @@ const nativeLiquidityPoolAbi = [
 
 const principalSchema = z.string().regex(/^\d+$/);
 
-function nowSeconds(): number {
-  return Math.floor(Date.now() / 1000);
+let cachedChainNow: { timestampSeconds: number; fetchedAtMs: number } | undefined;
+async function chainNowSeconds(): Promise<number> {
+  const nowMs = Date.now();
+  if (cachedChainNow && nowMs - cachedChainNow.fetchedAtMs < 5_000) return cachedChainNow.timestampSeconds;
+
+  const blockNumber = await publicClient.getBlockNumber();
+  const block = await publicClient.getBlock({ blockNumber });
+  const timestampSeconds = Number(block.timestamp);
+  if (!Number.isFinite(timestampSeconds) || timestampSeconds <= 0) throw new HttpError(502, "rpc-unavailable", "Failed to read chain timestamp");
+
+  cachedChainNow = { timestampSeconds, fetchedAtMs: nowMs };
+  return timestampSeconds;
+}
+
+async function findOnchainDefaultedGasLoanId(borrower: `0x${string}`): Promise<number | undefined> {
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+
+  const docs = await offers
+    .find({ borrower: borrower.toLowerCase(), status: "executed", loanId: { $exists: true } }, { projection: { loanId: 1 } })
+    .toArray();
+
+  const ids = Array.from(new Set(docs.map((d) => d.loanId).filter((id): id is number => typeof id === "number" && id > 0)));
+  if (ids.length === 0) return undefined;
+
+  ids.sort((a, b) => b - a);
+
+  const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+  const chunkSize = 20;
+
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const results = await Promise.all(
+      chunk.map(async (id) => {
+        const loan = await publicClient.readContract({
+          address: agentLoanManager,
+          abi: agentLoanManagerAbi,
+          functionName: "loans",
+          args: [BigInt(id)],
+        });
+        const [onchainBorrower] = loan;
+        const defaulted = loan[9] === true;
+        return {
+          id,
+          defaulted: defaulted && onchainBorrower.toLowerCase() === borrower.toLowerCase(),
+        };
+      })
+    );
+
+    const hit = results.find((r) => r.defaulted);
+    if (hit) return hit.id;
+  }
+
+  return undefined;
 }
 
 async function getActiveGasLoanIds(borrower: `0x${string}`): Promise<number[]> {
@@ -250,11 +320,25 @@ async function ensureSignerMatchesContract() {
   }
 }
 
-async function ensureBorrowerNotDefaulted(borrower: `0x${string}`) {
+async function ensureBorrowerNotDefaulted(agentId: string, borrower: `0x${string}`) {
   const db = getDb();
   const events = db.collection<ActivityEventDoc>("activity-events");
   const doc = await events.findOne({ borrower: borrower.toLowerCase(), type: "gas-loan.defaulted" }, { projection: { _id: 1 } });
   if (doc) throw new HttpError(403, "borrower-defaulted", "Borrower has a defaulted gas loan");
+
+  const loanId = await findOnchainDefaultedGasLoanId(borrower);
+  if (!loanId) return;
+
+  await recordActivityEvent({
+    type: "gas-loan.defaulted",
+    dedupeKey: `gas-loan.defaulted:onchain:${env.CHAIN_ID}:${env.AGENT_LOAN_MANAGER_ADDRESS.toLowerCase()}:${loanId}`,
+    agentId,
+    borrower: borrower.toLowerCase(),
+    loanId,
+    payload: { source: "onchain-state" },
+  });
+
+  throw new HttpError(403, "borrower-defaulted", "Borrower has a defaulted gas loan");
 }
 
 export async function createGasLoanOffer(agentId: string, input: GasLoanOfferRequest): Promise<GasLoanOfferResponse> {
@@ -264,10 +348,10 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
   if (!Number.isFinite(input.durationSeconds) || input.durationSeconds <= 0) throw new HttpError(400, "invalid-duration", "durationSeconds invalid");
   if (!Number.isFinite(input.action) || input.action < 0) throw new HttpError(400, "invalid-action", "action invalid");
 
-  await ensureBorrowerNotDefaulted(borrower);
+  await ensureBorrowerNotDefaulted(agentId, borrower);
 
   const principal = BigInt(input.principalWei);
-  const issuedAt = nowSeconds();
+  const issuedAt = await chainNowSeconds();
   const dueAt = issuedAt + Math.floor(input.durationSeconds);
   const offerTtl = input.offerTtlSeconds ?? 300;
   const expiresAt = issuedAt + Math.max(1, Math.floor(offerTtl));
@@ -414,7 +498,7 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
   const borrower = asAddress(input.borrower);
   if (!Number.isInteger(input.nonce) || input.nonce <= 0) throw new HttpError(400, "invalid-nonce", "nonce must be a positive integer");
 
-  const now = nowSeconds();
+  const now = await chainNowSeconds();
   const db = getDb();
   const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
   const offerDoc = await offers.findOne({ borrower: borrower.toLowerCase(), nonce: input.nonce });
