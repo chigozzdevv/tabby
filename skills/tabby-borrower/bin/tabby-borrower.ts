@@ -7,6 +7,40 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { createPublicClient, createWalletClient, formatEther, http } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { getEnv } from "../env.js";
+
+type LastGasLoan = {
+  loanId: number;
+  borrower: string;
+  principalWei: string;
+  interestBps: number;
+  dueAt: number;
+  action: number;
+};
+
+type BorrowerState = {
+  chainId?: number;
+  agentLoanManager?: string;
+  trackedGasLoanIds?: number[];
+  lastReminderAt?: number;
+  lastLowGasAt?: number;
+  lastGasLoan?: Partial<LastGasLoan>;
+};
+
+type GasLoanState = {
+  loanId: number;
+  borrower: string;
+  principalWei: string;
+  rateBps: number;
+  openedAt: number;
+  dueAt: number;
+  lastAccruedAt: number;
+  accruedInterestWei: string;
+  totalRepaidWei: string;
+  closed: boolean;
+  defaulted: boolean;
+  outstandingWei: string;
+};
 
 function parseDotEnv(content) {
   for (const line of content.split(/\r?\n/)) {
@@ -41,6 +75,7 @@ async function loadLocalEnv() {
 }
 
 await loadLocalEnv();
+const ENV = getEnv();
 
 function usage() {
   console.log(
@@ -62,7 +97,7 @@ function usage() {
       "  MONAD_CHAIN_ID / CHAIN_ID   (optional; defaults to 10143 unless returned by Tabby or cached)",
       "  MONAD_RPC_URL / RPC_URL     (optional; defaults to https://testnet-rpc.monad.xyz or https://rpc.monad.xyz)",
       "  AGENT_LOAN_MANAGER_ADDRESS         (optional; overrides cached/public config)",
-      "  TABBY_REMIND_WINDOWS_SECONDS        (optional; default: 3600,900,300)",
+      "  TABBY_REMIND_SECONDS                (optional; default: 3600)",
       "  TABBY_REMIND_REPEAT_SECONDS         (optional; default: 21600)",
       "  TABBY_MIN_REPAY_GAS_WEI             (optional; default: 1000000000000000)",
     ].join("\n")
@@ -78,20 +113,20 @@ function getArg(name) {
 }
 
 function requireEnv(name) {
-  const v = process.env[name];
+  const v = ENV[name];
   if (!v) throw new Error(`Missing env ${name}`);
   return v;
 }
 
 function baseUrl() {
-  return process.env.TABBY_API_BASE_URL ?? "http://localhost:3000";
+  return ENV.TABBY_API_BASE_URL;
 }
 
 async function statePath() {
   return path.join(os.homedir(), ".config", "tabby-borrower", "state.json");
 }
 
-async function loadState() {
+async function loadState(): Promise<BorrowerState & { path: string }> {
   const p = await statePath();
   const raw = await fs.readFile(p, "utf8");
   const schema = z
@@ -99,9 +134,8 @@ async function loadState() {
       chainId: z.number().int().positive().optional(),
       agentLoanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
       trackedGasLoanIds: z.array(z.number().int().positive()).optional(),
-      gasLoanReminders: z
-        .record(z.string(), z.record(z.string(), z.number().int().positive()))
-        .optional(),
+      lastReminderAt: z.number().int().positive().optional(),
+      lastLowGasAt: z.number().int().positive().optional(),
       lastGasLoan: z
         .object({
           loanId: z.number().int().positive(),
@@ -114,11 +148,11 @@ async function loadState() {
         .optional(),
     })
     .passthrough();
-  const parsed = schema.parse(JSON.parse(raw));
+  const parsed = schema.parse(JSON.parse(raw)) as BorrowerState;
   return { ...parsed, path: p };
 }
 
-async function tryLoadState() {
+async function tryLoadState(): Promise<(BorrowerState & { path: string }) | undefined> {
   try {
     return await loadState();
   } catch {
@@ -126,10 +160,10 @@ async function tryLoadState() {
   }
 }
 
-async function updateState(patch) {
+async function updateState(patch: Partial<BorrowerState>) {
   const p = await statePath();
   await ensureDir(path.dirname(p));
-  let existing = {};
+  let existing: BorrowerState = {};
   try {
     const raw = await fs.readFile(p, "utf8");
     const parsed = JSON.parse(raw);
@@ -173,7 +207,7 @@ async function saveWallet(privateKey) {
 
 async function mintIdentityToken() {
   const apiKey = requireEnv("MOLTBOOK_API_KEY");
-  const audience = process.env.MOLTBOOK_AUDIENCE;
+  const audience = ENV.MOLTBOOK_AUDIENCE;
 
   const res = await fetch("https://www.moltbook.com/api/v1/agents/me/identity-token", {
     method: "POST",
@@ -203,17 +237,6 @@ async function chainNowSeconds(publicClient) {
   return timestampSeconds;
 }
 
-function parseSecondsCsv(value, fallback) {
-  if (!value) return fallback;
-  const parts = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0);
-  return parts.length > 0 ? parts : fallback;
-}
-
 function formatSeconds(seconds) {
   const abs = Math.abs(seconds);
   const sign = seconds < 0 ? "-" : "";
@@ -221,6 +244,22 @@ function formatSeconds(seconds) {
   if (abs < 3600) return `${sign}${Math.floor(abs / 60)}m`;
   if (abs < 86400) return `${sign}${Math.floor(abs / 3600)}h`;
   return `${sign}${Math.floor(abs / 86400)}d`;
+}
+
+async function fetchNextDueFromServer(borrower: string) {
+  const url = new URL("/public/monitoring/gas-loans/next-due", baseUrl());
+  url.searchParams.set("borrower", borrower);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`public next-due failed (${res.status})`);
+  const json = await res.json();
+  if (!json?.ok) throw new Error("public next-due invalid response");
+  if (!json?.data) return undefined;
+  const schema = z.object({
+    loanId: z.number().int().positive(),
+    dueAt: z.number().int().positive(),
+    outstandingWei: z.string().regex(/^\d+$/),
+  });
+  return schema.parse(json.data);
 }
 
 async function fetchTabbyPublicConfig() {
@@ -241,17 +280,13 @@ async function fetchTabbyPublicConfig() {
 }
 
 async function getChainConfigFromStateOrEnv() {
-  const chainIdEnv = process.env.MONAD_CHAIN_ID
-    ? Number(process.env.MONAD_CHAIN_ID)
-    : process.env.CHAIN_ID
-      ? Number(process.env.CHAIN_ID)
-      : undefined;
-  const rpcUrlEnv = process.env.MONAD_RPC_URL ?? process.env.RPC_URL;
-  const agentLoanManagerEnv = process.env.AGENT_LOAN_MANAGER_ADDRESS;
+  const chainIdEnv = ENV.MONAD_CHAIN_ID ?? ENV.CHAIN_ID;
+  const rpcUrlEnv = ENV.MONAD_RPC_URL ?? ENV.RPC_URL;
+  const agentLoanManagerEnv = ENV.AGENT_LOAN_MANAGER_ADDRESS;
 
   const publicConfig = await fetchTabbyPublicConfig();
 
-  let state;
+  let state: BorrowerState | undefined;
   try {
     state = await loadState();
   } catch {
@@ -298,7 +333,7 @@ async function resolveBorrowerAddress() {
   throw new Error("Missing --borrower (or run init-wallet first)");
 }
 
-async function fetchExecutedLoanIdsFromServer(borrower) {
+async function fetchExecutedLoanIdsFromServer(borrower: string): Promise<number[]> {
   const url = new URL("/public/monitoring/gas-loans", baseUrl());
   url.searchParams.set("borrower", borrower);
   url.searchParams.set("status", "executed");
@@ -350,7 +385,7 @@ const agentLoanManagerReadAbi = [
   },
 ];
 
-async function readGasLoanState(publicClient, agentLoanManager, loanId) {
+async function readGasLoanState(publicClient: any, agentLoanManager: string, loanId: number): Promise<GasLoanState> {
   const id = BigInt(loanId);
   const [loan, outstanding] = await Promise.all([
     publicClient.readContract({ address: agentLoanManager, abi: agentLoanManagerReadAbi, functionName: "loans", args: [id] }),
@@ -380,23 +415,9 @@ async function heartbeat() {
   const borrower = await resolveBorrowerAddress();
   if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
 
-  const state = (await tryLoadState()) ?? {};
+  const state: BorrowerState = (await tryLoadState()) ?? {};
   const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
-
-  let loanIds = Array.isArray(state.trackedGasLoanIds) ? state.trackedGasLoanIds.filter((n) => Number.isInteger(n) && n > 0) : [];
-  if (state.lastGasLoan?.loanId && !loanIds.includes(state.lastGasLoan.loanId)) loanIds.push(state.lastGasLoan.loanId);
-
-  if (loanIds.length === 0) {
-    try {
-      loanIds = await fetchExecutedLoanIdsFromServer(borrower);
-    } catch {
-      // ignore (server may be offline); we'll just treat as no loans to check
-      loanIds = [];
-    }
-  }
-
-  loanIds = Array.from(new Set(loanIds)).sort((a, b) => a - b);
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
 
   const now = await chainNowSeconds(publicClient);
   const graceSecondsRaw = await publicClient.readContract({
@@ -406,131 +427,100 @@ async function heartbeat() {
   });
   const graceSeconds = Number(graceSecondsRaw);
 
-  const remindWindows = parseSecondsCsv(process.env.TABBY_REMIND_WINDOWS_SECONDS, [3600, 900, 300]).sort((a, b) => a - b);
-  const repeatSeconds = parseSecondsCsv(process.env.TABBY_REMIND_REPEAT_SECONDS, [21600])[0];
-  const minRepayGasWei = BigInt(process.env.TABBY_MIN_REPAY_GAS_WEI ?? "1000000000000000");
-  const maxWindowSeconds = remindWindows.length > 0 ? remindWindows[remindWindows.length - 1] : 3600;
+  const remindSeconds = ENV.TABBY_REMIND_SECONDS ?? 3600;
+  const repeatSeconds = ENV.TABBY_REMIND_REPEAT_SECONDS ?? 21600;
+  const minRepayGasWei = BigInt(ENV.TABBY_MIN_REPAY_GAS_WEI ?? "1000000000000000");
 
-  const reminders = typeof state.gasLoanReminders === "object" && state.gasLoanReminders !== null ? state.gasLoanReminders : {};
-  const nextReminders = { ...reminders };
-  const globalSent =
-    typeof nextReminders._global === "object" && nextReminders._global !== null ? nextReminders._global : {};
-  const markGlobalSent = (key) => {
-    globalSent[key] = now;
-    nextReminders._global = globalSent;
-  };
-  const shouldRepeatGlobal = (key) => {
-    const last = globalSent[key];
-    if (!last) return true;
-    return now - last >= repeatSeconds;
-  };
+  let nextDue: Awaited<ReturnType<typeof fetchNextDueFromServer>> | undefined = undefined;
+  try {
+    nextDue = await fetchNextDueFromServer(borrower);
+  } catch {
+    nextDue = undefined;
+  }
 
-  const loanStates = await Promise.all(loanIds.map(async (id) => await readGasLoanState(publicClient, agentLoanManager, id)));
-  const relevant = loanStates.filter((l) => l.borrower?.toLowerCase?.() === borrower.toLowerCase());
-
-  const active = relevant.filter((l) => !l.closed && !l.defaulted && BigInt(l.outstandingWei) > 0n);
-  const activeIds = active.map((l) => l.loanId);
-
-  const balanceWei = await publicClient.getBalance({ address: borrower });
-
-  const alerts = [];
-  for (const loan of active) {
-    const dueInSeconds = loan.dueAt - now;
-    const graceEndsAt = loan.dueAt + (Number.isFinite(graceSeconds) && graceSeconds >= 0 ? graceSeconds : 0);
-    const isOverdue = dueInSeconds <= 0;
-    const isDefaultEligible = now > graceEndsAt;
-
-    const sent = typeof nextReminders[String(loan.loanId)] === "object" && nextReminders[String(loan.loanId)] !== null ? nextReminders[String(loan.loanId)] : {};
-
-    const markSent = (key) => {
-      sent[key] = now;
-      nextReminders[String(loan.loanId)] = sent;
-    };
-
-    const shouldRepeat = (key) => {
-      const last = sent[key];
-      if (!last) return true;
-      return now - last >= repeatSeconds;
-    };
-
-    if (isDefaultEligible) {
-      if (shouldRepeat("defaultEligible")) {
-        alerts.push({
-          type: "defaultEligible",
-          loanId: loan.loanId,
-          dueAt: loan.dueAt,
-          overdueSeconds: now - loan.dueAt,
-          outstandingWei: loan.outstandingWei,
-        });
-        markSent("defaultEligible");
+  let loanState: GasLoanState | undefined = undefined;
+  if (nextDue) {
+    loanState = await readGasLoanState(publicClient, agentLoanManager, nextDue.loanId);
+  } else {
+    let loanIds = Array.isArray(state.trackedGasLoanIds) ? state.trackedGasLoanIds.filter((n) => Number.isInteger(n) && n > 0) : [];
+    if (state.lastGasLoan?.loanId && !loanIds.includes(state.lastGasLoan.loanId)) loanIds.push(state.lastGasLoan.loanId);
+    if (loanIds.length === 0) {
+      try {
+        loanIds = await fetchExecutedLoanIdsFromServer(borrower);
+      } catch {
+        loanIds = [];
       }
-      if (balanceWei < minRepayGasWei && shouldRepeatGlobal("lowGas")) {
-        alerts.push({
-          type: "lowGas",
-          loanId: loan.loanId,
-          balanceWei: balanceWei.toString(),
-          minRepayGasWei: minRepayGasWei.toString(),
-        });
-        markGlobalSent("lowGas");
-      }
-      continue;
     }
+    loanIds = Array.from(new Set(loanIds)).sort((a, b) => a - b);
 
-    if (isOverdue) {
-      if (shouldRepeat("overdue")) {
-        alerts.push({
-          type: "overdue",
-          loanId: loan.loanId,
-          dueAt: loan.dueAt,
-          overdueSeconds: now - loan.dueAt,
-          outstandingWei: loan.outstandingWei,
-        });
-        markSent("overdue");
-      }
-      if (balanceWei < minRepayGasWei && shouldRepeatGlobal("lowGas")) {
-        alerts.push({
-          type: "lowGas",
-          loanId: loan.loanId,
-          balanceWei: balanceWei.toString(),
-          minRepayGasWei: minRepayGasWei.toString(),
-        });
-        markGlobalSent("lowGas");
-      }
-      continue;
-    }
-
-    for (const w of remindWindows) {
-      if (dueInSeconds > w) continue;
-      const key = `dueSoon:${w}`;
-      if (!sent[key]) {
-        alerts.push({
-          type: "dueSoon",
-          windowSeconds: w,
-          loanId: loan.loanId,
-          dueAt: loan.dueAt,
-          dueInSeconds,
-          outstandingWei: loan.outstandingWei,
-        });
-        markSent(key);
-      }
-      break;
-    }
-
-    // Low balance is global (avoid duplicate alerts across multiple loans).
-    if (dueInSeconds <= maxWindowSeconds && balanceWei < minRepayGasWei && shouldRepeatGlobal("lowGas")) {
-      alerts.push({
-        type: "lowGas",
-        loanId: loan.loanId,
-        balanceWei: balanceWei.toString(),
-        minRepayGasWei: minRepayGasWei.toString(),
-      });
-      markGlobalSent("lowGas");
+    const loanStates = await Promise.all(loanIds.map(async (id) => await readGasLoanState(publicClient, agentLoanManager, id)));
+    const relevant = loanStates.filter((l) => l.borrower?.toLowerCase?.() === borrower.toLowerCase());
+    const active = relevant.filter((l) => !l.closed && !l.defaulted && BigInt(l.outstandingWei) > 0n);
+    if (active.length > 0) {
+      loanState = active.sort((a, b) => a.dueAt - b.dueAt)[0];
     }
   }
 
+  if (!loanState || BigInt(loanState.outstandingWei) === 0n || loanState.closed || loanState.defaulted) {
+    if (!quietOk) console.log("Tabby: no active gas loans.");
+    return;
+  }
+
+  const balanceWei = await publicClient.getBalance({ address: borrower });
+  const dueInSeconds = loanState.dueAt - now;
+  const isOverdue = dueInSeconds <= 0;
+  const graceEndsAt = loanState.dueAt + (Number.isFinite(graceSeconds) && graceSeconds >= 0 ? graceSeconds : 0);
+  const isDefaultEligible = now > graceEndsAt;
+
+  const lastReminderAt = Number.isInteger(state.lastReminderAt) ? state.lastReminderAt : 0;
+  const lastLowGasAt = Number.isInteger(state.lastLowGasAt) ? state.lastLowGasAt : 0;
+
+  const alerts = [];
+  if (isDefaultEligible) {
+    if (now - lastReminderAt >= repeatSeconds) {
+      alerts.push({
+        type: "defaultEligible",
+        loanId: loanState.loanId,
+        dueAt: loanState.dueAt,
+        overdueSeconds: now - loanState.dueAt,
+        outstandingWei: loanState.outstandingWei,
+      });
+    }
+  } else if (isOverdue) {
+    if (now - lastReminderAt >= repeatSeconds) {
+      alerts.push({
+        type: "overdue",
+        loanId: loanState.loanId,
+        dueAt: loanState.dueAt,
+        overdueSeconds: now - loanState.dueAt,
+        outstandingWei: loanState.outstandingWei,
+      });
+    }
+  } else if (dueInSeconds <= remindSeconds) {
+    if (now - lastReminderAt >= repeatSeconds) {
+      alerts.push({
+        type: "dueSoon",
+        loanId: loanState.loanId,
+        dueAt: loanState.dueAt,
+        dueInSeconds,
+        outstandingWei: loanState.outstandingWei,
+      });
+    }
+  }
+
+  if (alerts.length > 0 && balanceWei < minRepayGasWei && now - lastLowGasAt >= repeatSeconds) {
+    alerts.push({
+      type: "lowGas",
+      loanId: loanState.loanId,
+      balanceWei: balanceWei.toString(),
+      minRepayGasWei: minRepayGasWei.toString(),
+    });
+  }
+
   await updateState({
-    trackedGasLoanIds: activeIds,
-    gasLoanReminders: nextReminders,
+    trackedGasLoanIds: [loanState.loanId],
+    lastReminderAt: alerts.some((a) => a.type !== "lowGas") ? now : lastReminderAt,
+    lastLowGasAt: alerts.some((a) => a.type === "lowGas") ? now : lastLowGasAt,
   });
 
   const payload = {
@@ -540,7 +530,7 @@ async function heartbeat() {
     now,
     gracePeriodSeconds: Number.isFinite(graceSeconds) ? graceSeconds : 0,
     balanceWei: balanceWei.toString(),
-    activeLoanIds: activeIds,
+    activeLoanIds: [loanState.loanId],
     alerts,
   };
 
@@ -551,15 +541,7 @@ async function heartbeat() {
 
   if (alerts.length === 0) {
     if (!quietOk) {
-      if (activeIds.length === 0) {
-        console.log("Tabby: no active gas loans.");
-      } else {
-        const next = active
-          .map((l) => ({ id: l.loanId, dueAt: l.dueAt }))
-          .sort((a, b) => a.dueAt - b.dueAt)[0];
-        const dueIn = next.dueAt - now;
-        console.log(`Tabby: ${activeIds.length} active gas loan(s). Next due in ${formatSeconds(dueIn)} (loanId=${next.id}).`);
-      }
+      console.log(`Tabby: 1 active gas loan. Next due in ${formatSeconds(dueInSeconds)} (loanId=${loanState.loanId}).`);
     }
     return;
   }
@@ -662,7 +644,7 @@ async function requestGasLoan() {
     ],
   };
 
-  const account = privateKeyToAccount(wallet.privateKey);
+  const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
   const borrowerSignature = await account.signTypedData({
     domain,
     types,
@@ -695,7 +677,7 @@ async function requestGasLoan() {
 
   const loanId = execJson?.data?.loanId;
   if (typeof loanId === "number" && Number.isInteger(loanId) && loanId > 0) {
-    const existingState = (await tryLoadState()) ?? {};
+    const existingState: BorrowerState = (await tryLoadState()) ?? {};
     const tracked = Array.isArray(existingState.trackedGasLoanIds)
       ? existingState.trackedGasLoanIds.filter((n) => Number.isInteger(n) && n > 0)
       : [];
@@ -734,7 +716,7 @@ async function status() {
   }
 
   const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
   const now = await chainNowSeconds(publicClient);
   const graceSecondsRaw = await publicClient.readContract({
     address: agentLoanManager,
@@ -770,28 +752,47 @@ async function nextDue() {
   const borrower = await resolveBorrowerAddress();
   if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
 
-  const state = (await tryLoadState()) ?? {};
-  const loanIds = Array.from(
-    new Set(
-      []
-        .concat(Array.isArray(state.trackedGasLoanIds) ? state.trackedGasLoanIds : [])
-        .concat(state.lastGasLoan?.loanId ? [state.lastGasLoan.loanId] : [])
-        .filter((n) => Number.isInteger(n) && n > 0)
-    )
-  );
-  if (loanIds.length === 0) throw new Error("No tracked loans found (run request-gas-loan first or pass --borrower)");
-
   const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
   const now = await chainNowSeconds(publicClient);
 
-  const states = await Promise.all(loanIds.map(async (id) => await readGasLoanState(publicClient, agentLoanManager, id)));
-  const relevant = states
-    .filter((l) => l.borrower?.toLowerCase?.() === borrower.toLowerCase())
-    .filter((l) => !l.closed && !l.defaulted && BigInt(l.outstandingWei) > 0n);
-  if (relevant.length === 0) throw new Error("No active loans found");
+  let next: GasLoanState | undefined = undefined;
+  try {
+    const nextDue = await fetchNextDueFromServer(borrower);
+    if (nextDue) {
+      next = await readGasLoanState(publicClient, agentLoanManager, nextDue.loanId);
+    }
+  } catch {
+    next = undefined;
+  }
 
-  const next = relevant.sort((a, b) => a.dueAt - b.dueAt)[0];
+  if (!next) {
+    const state: BorrowerState = (await tryLoadState()) ?? {};
+    let loanIds = Array.from(
+      new Set(
+        []
+          .concat(Array.isArray(state.trackedGasLoanIds) ? state.trackedGasLoanIds : [])
+          .concat(state.lastGasLoan?.loanId ? [state.lastGasLoan.loanId] : [])
+          .filter((n) => Number.isInteger(n) && n > 0)
+      )
+    );
+    if (loanIds.length === 0) {
+      try {
+        loanIds = await fetchExecutedLoanIdsFromServer(borrower);
+      } catch {
+        loanIds = [];
+      }
+    }
+    if (loanIds.length === 0) throw new Error("No tracked loans found (run request-gas-loan first or pass --borrower)");
+
+    const states = await Promise.all(loanIds.map(async (id) => await readGasLoanState(publicClient, agentLoanManager, id)));
+    const relevant = states
+      .filter((l) => l.borrower?.toLowerCase?.() === borrower.toLowerCase())
+      .filter((l) => !l.closed && !l.defaulted && BigInt(l.outstandingWei) > 0n);
+    if (relevant.length === 0) throw new Error("No active loans found");
+    next = relevant.sort((a, b) => a.dueAt - b.dueAt)[0];
+  }
+
   const dueInSeconds = next.dueAt - now;
 
   console.log(
@@ -818,7 +819,7 @@ async function repayGasLoan() {
   const amountWeiArg = getArg("--amount-wei");
 
   const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
 
   const outstanding = await publicClient.readContract({
     address: agentLoanManager,
@@ -832,9 +833,9 @@ async function repayGasLoan() {
   if (BigInt(repayWei) === 0n) throw new Error("Nothing to repay");
 
   const wallet = await loadWallet();
-  const account = privateKeyToAccount(wallet.privateKey);
+  const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
 
-  const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
+  const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) }) as any;
 
   const abi = [
     {

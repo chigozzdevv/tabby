@@ -21,3 +21,4 @@ contracts/.gas-snapshot
 contracts/.forge-coverage
 
 server/dist/
+skills/**/dist/

@@ -8,7 +8,7 @@ export type GasLoanOfferSummary = {
   expiresAt: number;
   action: number;
   metadataHash: `0x${string}`;
-  status: "issued" | "expired" | "executed" | "canceled";
+  status: "issued" | "expired" | "executing" | "executed" | "failed" | "canceled";
   txHash?: `0x${string}`;
   loanId?: number;
   createdAt: string;
@@ -46,4 +46,11 @@ export type PublicGasLoanDetails = {
     defaulted: boolean;
     outstandingWei: string;
   };
+};
+
+export type PublicGasLoanNextDue = {
+  loanId: number;
+  dueAt: number;
+  dueInSeconds: number;
+  outstandingWei: string;
 };

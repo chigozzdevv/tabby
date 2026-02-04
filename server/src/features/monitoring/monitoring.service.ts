@@ -4,16 +4,21 @@ import { asAddress, publicClient } from "@/shared/viem.js";
 import { HttpError } from "@/shared/http-errors.js";
 import { env } from "@/config/env.js";
 import type { GasLoanOfferDoc } from "@/features/loans/loans.model.js";
-import type { GasLoanDetails, GasLoanOfferSummary, PublicGasLoanDetails } from "@/features/monitoring/monitoring.types.js";
+import type {
+  GasLoanDetails,
+  GasLoanOfferSummary,
+  PublicGasLoanDetails,
+  PublicGasLoanNextDue,
+} from "@/features/monitoring/monitoring.types.js";
 
 const listQuerySchema = z.object({
-  status: z.enum(["issued", "expired", "executed", "canceled"]).optional(),
+  status: z.enum(["issued", "expired", "executing", "executed", "failed", "canceled"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
 const publicListQuerySchema = z.object({
   borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  status: z.enum(["issued", "expired", "executed", "canceled"]).optional(),
+  status: z.enum(["issued", "expired", "executing", "executed", "failed", "canceled"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
@@ -148,4 +153,48 @@ export async function getPublicGasLoanDetails(loanId: number): Promise<PublicGas
   const onchain = await getOnchainGasLoanState(loanId);
 
   return { offer, onchain };
+}
+
+export async function getPublicNextDue(borrower: string): Promise<PublicGasLoanNextDue | null> {
+  const db = getDb();
+  const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
+
+  const docs = await offers
+    .find(
+      { borrower: borrower.toLowerCase(), status: "executed", loanId: { $exists: true } },
+      { projection: { loanId: 1 } }
+    )
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .toArray();
+
+  const ids = Array.from(new Set(docs.map((d) => d.loanId).filter((id): id is number => typeof id === "number" && id > 0)));
+  if (ids.length === 0) return null;
+
+  const alm = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+
+  let best: { loanId: number; dueAt: number; outstandingWei: string } | null = null;
+  for (const id of ids) {
+    const [loan, outstanding] = await Promise.all([
+      publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "loans", args: [BigInt(id)] }),
+      publicClient.readContract({ address: alm, abi: agentLoanManagerAbi, functionName: "outstanding", args: [BigInt(id)] }),
+    ]);
+
+    if (outstanding <= 0n) continue;
+    const dueAt = Number(loan[4]);
+    if (!Number.isFinite(dueAt) || dueAt <= 0) continue;
+
+    if (!best || dueAt < best.dueAt) {
+      best = { loanId: id, dueAt, outstandingWei: outstanding.toString() };
+    }
+  }
+
+  if (!best) return null;
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    loanId: best.loanId,
+    dueAt: best.dueAt,
+    dueInSeconds: best.dueAt - now,
+    outstandingWei: best.outstandingWei,
+  };
 }

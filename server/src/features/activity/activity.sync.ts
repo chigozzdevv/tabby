@@ -120,138 +120,143 @@ async function syncOnce() {
   if (fromBlock > safeToBlock) return;
 
   const toBlock = safeToBlock;
+  const chunkSize = BigInt(env.ACTIVITY_CHUNK_SIZE);
 
-  const [executedLogs, repaidLogs, defaultedLogs] = await Promise.all([
-    publicClient.getContractEvents({ address: alm, abi: loanExecutedEventAbi, eventName: "LoanExecuted", fromBlock, toBlock }),
-    publicClient.getContractEvents({ address: alm, abi: loanRepaidEventAbi, eventName: "LoanRepaid", fromBlock, toBlock }),
-    publicClient.getContractEvents({ address: alm, abi: loanDefaultedEventAbi, eventName: "LoanDefaulted", fromBlock, toBlock }),
-  ]);
+  for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+    const end = start + chunkSize - 1n > toBlock ? toBlock : start + chunkSize - 1n;
 
-  type ExecutedLog = (typeof executedLogs)[number];
-  type RepaidLog = (typeof repaidLogs)[number];
-  type DefaultedLog = (typeof defaultedLogs)[number];
+    const [executedLogs, repaidLogs, defaultedLogs] = await Promise.all([
+      publicClient.getContractEvents({ address: alm, abi: loanExecutedEventAbi, eventName: "LoanExecuted", fromBlock: start, toBlock: end }),
+      publicClient.getContractEvents({ address: alm, abi: loanRepaidEventAbi, eventName: "LoanRepaid", fromBlock: start, toBlock: end }),
+      publicClient.getContractEvents({ address: alm, abi: loanDefaultedEventAbi, eventName: "LoanDefaulted", fromBlock: start, toBlock: end }),
+    ]);
 
-  type AnyLog =
-    | { kind: "executed"; log: ExecutedLog }
-    | { kind: "repaid"; log: RepaidLog }
-    | { kind: "defaulted"; log: DefaultedLog };
+    type ExecutedLog = (typeof executedLogs)[number];
+    type RepaidLog = (typeof repaidLogs)[number];
+    type DefaultedLog = (typeof defaultedLogs)[number];
 
-  const allLogs: AnyLog[] = [
-    ...executedLogs.map((l) => ({ kind: "executed" as const, log: l })),
-    ...repaidLogs.map((l) => ({ kind: "repaid" as const, log: l })),
-    ...defaultedLogs.map((l) => ({ kind: "defaulted" as const, log: l })),
-  ];
+    type AnyLog =
+      | { kind: "executed"; log: ExecutedLog }
+      | { kind: "repaid"; log: RepaidLog }
+      | { kind: "defaulted"; log: DefaultedLog };
 
-  if (allLogs.length === 0) {
-    await setActivityCursor(cursorKey, Number(toBlock));
-    return;
-  }
+    const allLogs: AnyLog[] = [
+      ...executedLogs.map((l) => ({ kind: "executed" as const, log: l })),
+      ...repaidLogs.map((l) => ({ kind: "repaid" as const, log: l })),
+      ...defaultedLogs.map((l) => ({ kind: "defaulted" as const, log: l })),
+    ];
 
-  const blockTimestamps = await fetchBlockTimestamps(allLogs.map((l) => l.log.blockNumber));
-
-  const loanIds = Array.from(
-    new Set(
-      allLogs.map((l) => Number(l.log.args.loanId)).filter((id) => Number.isFinite(id) && id > 0)
-    )
-  );
-  const contextByLoanId = await getAgentContextByLoanId(loanIds);
-
-  for (const item of allLogs) {
-    const txHash = item.log.transactionHash;
-    const blockNumber = Number(item.log.blockNumber);
-    const logIndex = Number(item.log.logIndex);
-    const createdAt = blockTimestamps.get(item.log.blockNumber.toString()) ?? new Date();
-
-    const loanIdRaw = item.log.args.loanId;
-    if (loanIdRaw === undefined) continue;
-    const loanId = Number(loanIdRaw);
-    const ctx = contextByLoanId.get(loanId);
-
-    if (item.kind === "executed") {
-      const args = item.log.args;
-      if (
-        args.borrower === undefined ||
-        args.principal === undefined ||
-        args.rateBps === undefined ||
-        args.dueAt === undefined ||
-        args.action === undefined
-      ) {
-        continue;
-      }
-
-      const borrower = (ctx?.borrower ?? args.borrower.toLowerCase()) as string;
-      await recordActivityEvent({
-        type: "gas-loan.executed",
-        dedupeKey: `gas-loan.executed:${txHash}`,
-        agentId: ctx?.agentId,
-        borrower: borrower,
-        loanId,
-        txHash,
-        blockNumber,
-        logIndex,
-        payload: {
-          borrower: args.borrower,
-          principalWei: args.principal.toString(),
-          rateBps: Number(args.rateBps),
-          dueAt: Number(args.dueAt),
-          action: Number(args.action),
-        },
-        createdAt,
-      });
+    if (allLogs.length === 0) {
+      await setActivityCursor(cursorKey, Number(end));
       continue;
     }
 
-    if (item.kind === "repaid") {
-      const args = item.log.args;
-      if (
-        args.payer === undefined ||
-        args.amount === undefined ||
-        args.principalPaid === undefined ||
-        args.interestPaid === undefined
-      ) {
+    const blockTimestamps = await fetchBlockTimestamps(allLogs.map((l) => l.log.blockNumber));
+
+    const loanIds = Array.from(
+      new Set(
+        allLogs.map((l) => Number(l.log.args.loanId)).filter((id) => Number.isFinite(id) && id > 0)
+      )
+    );
+    const contextByLoanId = await getAgentContextByLoanId(loanIds);
+
+    for (const item of allLogs) {
+      const txHash = item.log.transactionHash;
+      const blockNumber = Number(item.log.blockNumber);
+      const logIndex = Number(item.log.logIndex);
+      const createdAt = blockTimestamps.get(item.log.blockNumber.toString()) ?? new Date();
+
+      const loanIdRaw = item.log.args.loanId;
+      if (loanIdRaw === undefined) continue;
+      const loanId = Number(loanIdRaw);
+      const ctx = contextByLoanId.get(loanId);
+
+      if (item.kind === "executed") {
+        const args = item.log.args;
+        if (
+          args.borrower === undefined ||
+          args.principal === undefined ||
+          args.rateBps === undefined ||
+          args.dueAt === undefined ||
+          args.action === undefined
+        ) {
+          continue;
+        }
+
+        const borrower = (ctx?.borrower ?? args.borrower.toLowerCase()) as string;
+        await recordActivityEvent({
+          type: "gas-loan.executed",
+          dedupeKey: `gas-loan.executed:${txHash}`,
+          agentId: ctx?.agentId,
+          borrower: borrower,
+          loanId,
+          txHash,
+          blockNumber,
+          logIndex,
+          payload: {
+            borrower: args.borrower,
+            principalWei: args.principal.toString(),
+            rateBps: Number(args.rateBps),
+            dueAt: Number(args.dueAt),
+            action: Number(args.action),
+          },
+          createdAt,
+        });
         continue;
       }
 
+      if (item.kind === "repaid") {
+        const args = item.log.args;
+        if (
+          args.payer === undefined ||
+          args.amount === undefined ||
+          args.principalPaid === undefined ||
+          args.interestPaid === undefined
+        ) {
+          continue;
+        }
+
+        const borrower = (ctx?.borrower ?? (await getOnchainBorrower(loanId))) as string | undefined;
+        await recordActivityEvent({
+          type: "gas-loan.repaid",
+          dedupeKey: `gas-loan.repaid:${txHash}:${logIndex}`,
+          agentId: ctx?.agentId,
+          borrower,
+          loanId,
+          txHash,
+          blockNumber,
+          logIndex,
+          payload: {
+            payer: args.payer,
+            amountWei: args.amount.toString(),
+            principalPaidWei: args.principalPaid.toString(),
+            interestPaidWei: args.interestPaid.toString(),
+          },
+          createdAt,
+        });
+        continue;
+      }
+
+      const args = item.log.args;
+      if (args.principalWrittenOff === undefined) continue;
+
       const borrower = (ctx?.borrower ?? (await getOnchainBorrower(loanId))) as string | undefined;
       await recordActivityEvent({
-        type: "gas-loan.repaid",
-        dedupeKey: `gas-loan.repaid:${txHash}:${logIndex}`,
+        type: "gas-loan.defaulted",
+        dedupeKey: `gas-loan.defaulted:${txHash}:${logIndex}`,
         agentId: ctx?.agentId,
         borrower,
         loanId,
         txHash,
         blockNumber,
         logIndex,
-        payload: {
-          payer: args.payer,
-          amountWei: args.amount.toString(),
-          principalPaidWei: args.principalPaid.toString(),
-          interestPaidWei: args.interestPaid.toString(),
-        },
+        payload: { principalWrittenOffWei: args.principalWrittenOff.toString() },
         createdAt,
       });
-      continue;
     }
 
-    const args = item.log.args;
-    if (args.principalWrittenOff === undefined) continue;
-
-    const borrower = (ctx?.borrower ?? (await getOnchainBorrower(loanId))) as string | undefined;
-    await recordActivityEvent({
-      type: "gas-loan.defaulted",
-      dedupeKey: `gas-loan.defaulted:${txHash}:${logIndex}`,
-      agentId: ctx?.agentId,
-      borrower,
-      loanId,
-      txHash,
-      blockNumber,
-      logIndex,
-      payload: { principalWrittenOffWei: args.principalWrittenOff.toString() },
-      createdAt,
-    });
+    await setActivityCursor(cursorKey, Number(end));
   }
-
-  await setActivityCursor(cursorKey, Number(toBlock));
 }
 
 export function startActivitySync() {

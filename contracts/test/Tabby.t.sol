@@ -304,6 +304,7 @@ contract TabbySecuredLoansTest is TestBase {
         oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
+        positions.setLoanManager(address(loans));
 
         positions.grantRole(positions.ADMIN_ROLE(), address(loans));
         pool.grantRole(pool.BORROW_ROLE(), address(loans));
@@ -365,6 +366,7 @@ contract TabbySecuredLoansTest is TestBase {
         oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
+        positions.setLoanManager(address(loans));
 
         positions.grantRole(positions.ADMIN_ROLE(), address(loans));
         pool.grantRole(pool.BORROW_ROLE(), address(loans));
@@ -420,6 +422,7 @@ contract TabbySecuredLoansTest is TestBase {
         oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
+        positions.setLoanManager(address(loans));
 
         positions.grantRole(positions.ADMIN_ROLE(), address(loans));
         pool.grantRole(pool.BORROW_ROLE(), address(loans));
@@ -611,6 +614,7 @@ contract TabbyLiquidationEngineTest is TestBase {
         oracle.setFeed(address(debt), address(debtFeed), 0, true);
         positions.setEngines(address(policy), address(oracle));
         loans.setEngines(address(policy), address(oracle), address(positions));
+        positions.setLoanManager(address(loans));
 
         positions.grantRole(positions.ADMIN_ROLE(), address(loans));
         pool.grantRole(pool.BORROW_ROLE(), address(loans));

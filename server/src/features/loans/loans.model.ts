@@ -19,6 +19,9 @@ export type GasLoanOfferDoc = {
   txHash?: string;
   loanId?: number;
   executedAt?: Date;
-  status: "issued" | "expired" | "executed" | "canceled";
+  executingAt?: Date;
+  failedAt?: Date;
+  lastError?: string;
+  status: "issued" | "expired" | "executing" | "executed" | "failed" | "canceled";
   createdAt: Date;
 };

@@ -255,7 +255,6 @@ async function getNextNonce(borrower: string): Promise<number> {
     { $inc: { nextNonce: 1 }, $set: { updatedAt: new Date() } },
     { upsert: true, returnDocument: "after" }
   );
-
   const next = doc?.nextNonce ?? 1;
   return next;
 }
@@ -351,6 +350,7 @@ export async function createGasLoanOffer(agentId: string, input: GasLoanOfferReq
   await ensureBorrowerNotDefaulted(agentId, borrower);
 
   const principal = BigInt(input.principalWei);
+  if (principal <= 0n) throw new HttpError(400, "invalid-principal", "principal must be greater than 0");
   const issuedAt = await chainNowSeconds();
   const dueAt = issuedAt + Math.floor(input.durationSeconds);
   const offerTtl = input.offerTtlSeconds ?? 300;
@@ -501,24 +501,44 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
   const now = await chainNowSeconds();
   const db = getDb();
   const offers = db.collection<GasLoanOfferDoc>("gas-loan-offers");
-  const offerDoc = await offers.findOne({ borrower: borrower.toLowerCase(), nonce: input.nonce });
+  const baseDoc = await offers.findOne({ borrower: borrower.toLowerCase(), nonce: input.nonce });
 
-  if (!offerDoc) throw new HttpError(404, "offer-not-found", "Offer not found");
-  if (offerDoc.agentId !== agentId) throw new HttpError(403, "forbidden", "Offer does not belong to this agent");
-  if (offerDoc.status !== "issued") throw new HttpError(409, "offer-not-issuable", `Offer status is ${offerDoc.status}`);
+  if (!baseDoc) throw new HttpError(404, "offer-not-found", "Offer not found");
+  if (baseDoc.agentId !== agentId) throw new HttpError(403, "forbidden", "Offer does not belong to this agent");
+  if (baseDoc.status === "executed") {
+    return { txHash: baseDoc.txHash as Hex, loanId: baseDoc.loanId };
+  }
+  if (baseDoc.status === "executing") throw new HttpError(409, "offer-in-progress", "Offer is already executing");
+  if (baseDoc.status !== "issued" && baseDoc.status !== "failed") {
+    throw new HttpError(409, "offer-not-issuable", `Offer status is ${baseDoc.status}`);
+  }
 
-  if (offerDoc.expiresAt <= now) {
-    await offers.updateOne({ _id: offerDoc._id }, { $set: { status: "expired" } });
+  if (baseDoc.expiresAt <= now) {
+    await offers.updateOne({ _id: baseDoc._id }, { $set: { status: "expired" } });
     await recordActivityEvent({
       type: "gas-loan.offer-expired",
-      dedupeKey: `gas-loan.offer-expired:${offerDoc.borrower}:${offerDoc.nonce}`,
+      dedupeKey: `gas-loan.offer-expired:${baseDoc.borrower}:${baseDoc.nonce}`,
       agentId,
-      borrower: offerDoc.borrower,
-      payload: { borrower, nonce: offerDoc.nonce, expiresAt: offerDoc.expiresAt },
+      borrower: baseDoc.borrower,
+      payload: { borrower, nonce: baseDoc.nonce, expiresAt: baseDoc.expiresAt },
     });
     throw new HttpError(410, "offer-expired", "Offer expired");
   }
 
+  const locked = await offers.findOneAndUpdate(
+    { _id: baseDoc._id, status: { $in: ["issued", "failed"] } },
+    { $set: { status: "executing", executingAt: new Date() }, $unset: { lastError: "", failedAt: "" } },
+    { returnDocument: "after" }
+  );
+  const offerDoc = locked ?? null;
+  if (!offerDoc) {
+    const current = await offers.findOne({ _id: baseDoc._id });
+    if (current?.status === "executed") {
+      return { txHash: current.txHash as Hex, loanId: current.loanId };
+    }
+    if (current?.status === "executing") throw new HttpError(409, "offer-in-progress", "Offer is already executing");
+    throw new HttpError(409, "offer-not-issuable", `Offer status is ${current?.status ?? "unknown"}`);
+  }
   const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
   const alreadyUsed = await publicClient.readContract({
     address: agentLoanManager,
@@ -543,15 +563,44 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
     metadataHash: offerDoc.metadataHash as Hex,
   } as const;
 
-  const txHash = await walletClient.writeContract({
-    address: agentLoanManager,
-    abi: agentLoanManagerAbi,
-    functionName: "executeLoan",
-    args: [offer, offerDoc.tabbySignature as Hex, input.borrowerSignature as Hex],
-    account: tabbyAccount,
-  });
+  let txHash: Hex;
+  try {
+    txHash = await walletClient.writeContract({
+      address: agentLoanManager,
+      abi: agentLoanManagerAbi,
+      functionName: "executeLoan",
+      args: [offer, offerDoc.tabbySignature as Hex, input.borrowerSignature as Hex],
+      account: tabbyAccount,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await offers.updateOne(
+      { _id: offerDoc._id },
+      { $set: { status: "failed", lastError: message, failedAt: new Date() }, $unset: { executingAt: "" } }
+    );
+    throw error;
+  }
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  let receipt;
+  try {
+    receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await offers.updateOne(
+      { _id: offerDoc._id },
+      { $set: { status: "failed", lastError: message, failedAt: new Date() }, $unset: { executingAt: "" } }
+    );
+    throw error;
+  }
+
+  if (receipt.status !== "success") {
+    await offers.updateOne(
+      { _id: offerDoc._id },
+      { $set: { status: "failed", lastError: "transaction-reverted", failedAt: new Date() }, $unset: { executingAt: "" } }
+    );
+    throw new HttpError(502, "execute-reverted", "Loan execution reverted");
+  }
+
   let loanId: number | undefined;
   for (const log of receipt.logs) {
     try {
@@ -566,7 +615,10 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
 
   await offers.updateOne(
     { _id: offerDoc._id },
-    { $set: { status: "executed", txHash: txHash, loanId: loanId, executedAt: new Date() } }
+    {
+      $set: { status: "executed", txHash: txHash, loanId: loanId, executedAt: new Date() },
+      $unset: { executingAt: "", lastError: "", failedAt: "" },
+    }
   );
 
   await recordActivityEvent({

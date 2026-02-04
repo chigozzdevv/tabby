@@ -8,6 +8,11 @@ import {IPriceOracle} from "../oracle/i-price-oracle.sol";
 import {PolicyEngine} from "../policy/policy-engine.sol";
 import {IERC20} from "../interfaces/i-erc20.sol";
 
+interface LoanManagerLike {
+    function positionLoans(uint256 positionId) external view returns (uint256);
+    function outstanding(uint256 loanId) external view returns (uint256);
+}
+
 contract PositionManager is RoleManager {
     using SafeErc20 for address;
 
@@ -36,6 +41,7 @@ contract PositionManager is RoleManager {
     address public walletRegistry;
     address public policyEngine;
     address public priceOracle;
+    address public loanManager;
 
     event PositionOpened(uint256 indexed positionId, address indexed owner, address indexed collateralAsset, uint256 amount);
     event CollateralAdded(uint256 indexed positionId, uint256 amount);
@@ -44,6 +50,7 @@ contract PositionManager is RoleManager {
     event DebtUpdated(uint256 indexed positionId, address indexed debtAsset, uint256 debt);
     event EnginesUpdated(address indexed policyEngine, address indexed priceOracle);
     event WalletRegistryUpdated(address indexed registry);
+    event LoanManagerUpdated(address indexed loanManager);
 
     constructor(address admin) RoleManager(admin) {
         nextPositionId = 1;
@@ -58,6 +65,11 @@ contract PositionManager is RoleManager {
     function setWalletRegistry(address registry) external onlyRole(ADMIN_ROLE) {
         walletRegistry = registry;
         emit WalletRegistryUpdated(registry);
+    }
+
+    function setLoanManager(address loanManager_) external onlyRole(ADMIN_ROLE) {
+        loanManager = loanManager_;
+        emit LoanManagerUpdated(loanManager_);
     }
 
     function openPosition(address collateralAsset, uint256 collateralAmount) external returns (uint256 positionId) {
@@ -123,7 +135,7 @@ contract PositionManager is RoleManager {
 
         uint256 newCollateralAmount = position.collateralAmount - amount;
         if (position.debt > 0) {
-            _ensureHealthy(position, newCollateralAmount);
+            _ensureHealthy(positionId, position, newCollateralAmount);
         }
 
         position.collateralAmount = newCollateralAmount;
@@ -184,7 +196,7 @@ contract PositionManager is RoleManager {
         seizeCollateral(positionId, msg.sender);
     }
 
-    function _ensureHealthy(Position storage position, uint256 collateralAmount) internal view {
+    function _ensureHealthy(uint256 positionId, Position storage position, uint256 collateralAmount) internal view {
         if (policyEngine == address(0) || priceOracle == address(0)) revert EnginesNotSet();
         uint256 collateralPrice = IPriceOracle(priceOracle).getPrice(position.collateralAsset);
         uint256 debtPrice = IPriceOracle(priceOracle).getPrice(position.debtAsset);
@@ -193,7 +205,15 @@ contract PositionManager is RoleManager {
         uint8 collateralDecimals = IERC20(position.collateralAsset).decimals();
         uint8 debtDecimals = IERC20(position.debtAsset).decimals();
         uint256 collateralValue = (collateralAmount * collateralPrice) / (10 ** collateralDecimals);
-        uint256 debtValue = (position.debt * debtPrice) / (10 ** debtDecimals);
+        uint256 debtAmount = position.debt;
+        if (loanManager != address(0) && debtAmount > 0) {
+            uint256 loanId = LoanManagerLike(loanManager).positionLoans(positionId);
+            if (loanId != 0) {
+                uint256 outstanding = LoanManagerLike(loanManager).outstanding(loanId);
+                if (outstanding > 0) debtAmount = outstanding;
+            }
+        }
+        uint256 debtValue = (debtAmount * debtPrice) / (10 ** debtDecimals);
         bool ok = PolicyEngine(policyEngine).validateBorrow(position.collateralAsset, collateralValue, debtValue);
         if (!ok) revert CollateralTooLow();
     }

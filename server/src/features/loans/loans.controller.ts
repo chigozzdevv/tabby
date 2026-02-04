@@ -6,7 +6,16 @@ import type { GasLoanExecuteRequest, GasLoanOfferRequest } from "@/features/loan
 
 const gasOfferSchema = z.object({
   borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  principalWei: z.string().regex(/^\d+$/),
+  principalWei: z
+    .string()
+    .regex(/^\d+$/)
+    .refine((value) => {
+      try {
+        return BigInt(value) > 0n;
+      } catch {
+        return false;
+      }
+    }, "principalWei must be greater than 0"),
   interestBps: z.number().int().min(0).max(1_000_000),
   durationSeconds: z.number().int().positive(),
   offerTtlSeconds: z.number().int().positive().optional(),

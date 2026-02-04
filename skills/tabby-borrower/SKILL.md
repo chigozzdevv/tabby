@@ -29,6 +29,7 @@ This repo includes a small helper CLI under `skills/tabby-borrower/`:
 ```bash
 cd skills/tabby-borrower
 npm install
+npm run build
 cp .env.example .env
 
 # Create a borrower wallet (saved to ~/.config/tabby-borrower/wallet.json)
@@ -73,6 +74,7 @@ tabby-borrower heartbeat --quiet-ok
 - Tabby returns `agentLoanManager` + `chainId` in the offer response; use those values for EIP-712 signing.
 - After execution, use:
   - `GET /public/monitoring/gas-loans/:loanId`
+  - `GET /public/monitoring/gas-loans/next-due?borrower=0x...`
   - `GET /public/activity?loanId=:loanId`
   to report status back to Telegram (OpenClaw will deliver your text).
 
@@ -84,14 +86,14 @@ Due checks run when the agent is invoked (chat-driven), or from a periodic trigg
 
 Helper commands:
 
-- `tabby-borrower heartbeat --quiet-ok` (live, chain-timestamp-based; supports multiple active loans incl. `repay-gas`)
+- `tabby-borrower heartbeat --quiet-ok` (live, chain-timestamp-based; checks the nearest due active loan, incl. `repay-gas`)
 - `tabby-borrower next-due` (live; shows nearest due loan)
 - `tabby-borrower status --loan-id <id>` (live; pulls `/public/monitoring/gas-loans/:loanId`)
 - `tabby-borrower repay-gas-loan --loan-id <id>` (repay tx)
 
 Optional heartbeat env config:
 
-- `TABBY_REMIND_WINDOWS_SECONDS` (default `3600,900,300` = 1h/15m/5m)
+- `TABBY_REMIND_SECONDS` (default `3600` = 1h)
 - `TABBY_REMIND_REPEAT_SECONDS` (default `21600` = 6h repeat for overdue/default-eligible/low-gas alerts)
 - `TABBY_MIN_REPAY_GAS_WEI` (default `1000000000000000` = 0.001 MON)
 - `AGENT_LOAN_MANAGER_ADDRESS` (optional override if `/public/config` is unreachable)

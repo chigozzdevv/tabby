@@ -41,6 +41,15 @@ const envSchema = z.object({
   ACTIVITY_START_BLOCK: z.coerce.number().int().nonnegative().optional(),
   ACTIVITY_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),
   ACTIVITY_CONFIRMATIONS: z.coerce.number().int().min(0).max(100).default(5),
+  ACTIVITY_CHUNK_SIZE: z.coerce.number().int().min(100).max(200_000).default(10_000),
+}).superRefine((value, ctx) => {
+  if (value.NODE_ENV === "production" && value.ACTIVITY_SYNC_ENABLED && value.ACTIVITY_START_BLOCK === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "ACTIVITY_START_BLOCK is required in production when activity sync is enabled",
+      path: ["ACTIVITY_START_BLOCK"],
+    });
+  }
 });
 
 export const env = envSchema.parse(process.env);

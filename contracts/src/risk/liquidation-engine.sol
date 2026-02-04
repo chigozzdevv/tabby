@@ -70,6 +70,25 @@ contract LiquidationEngine is RoleManager {
         if (debt == 0) revert NoDebt();
         if (debtAsset == address(0)) revert InvalidDebtAsset();
 
+        uint256 loanId = 0;
+        uint256 principalToRepay = debt;
+        uint256 debtToRepay = debt;
+        if (loanManager != address(0)) {
+            loanId = LoanManager(loanManager).positionLoans(positionId);
+            if (loanId != 0) {
+                (, address loanAsset, uint256 principal, , , , , , , , bool closed) = LoanManager(loanManager).loans(loanId);
+                if (loanAsset != address(0) && loanAsset != debtAsset) revert InvalidDebtAsset();
+                if (!closed) {
+                    uint256 outstanding = LoanManager(loanManager).outstanding(loanId);
+                    if (outstanding > 0) {
+                        debtToRepay = outstanding;
+                        principalToRepay = principal;
+                    }
+                }
+            }
+        }
+        if (principalToRepay > debtToRepay) principalToRepay = debtToRepay;
+
         uint256 collateralPrice = IPriceOracle(priceOracle).getPrice(collateralAsset);
         uint256 debtPrice = IPriceOracle(priceOracle).getPrice(debtAsset);
         if (collateralPrice == 0 || debtPrice == 0) revert PriceUnavailable();
@@ -80,35 +99,44 @@ contract LiquidationEngine is RoleManager {
         uint8 collateralDecimals = IERC20(collateralAsset).decimals();
         uint8 debtDecimals = IERC20(debtAsset).decimals();
         uint256 collateralValue = (collateralAmount * collateralPrice) / (10 ** collateralDecimals);
-        uint256 debtValue = (debt * debtPrice) / (10 ** debtDecimals);
+        uint256 debtValue = (debtToRepay * debtPrice) / (10 ** debtDecimals);
         bool healthy = RiskEngine(riskEngine).isHealthy(collateralValue, debtValue, liquidationThresholdBps);
         if (healthy) revert PositionHealthy();
 
         // Collect repayment from liquidator.
-        debtAsset.safeTransferFrom(msg.sender, address(this), debt);
+        debtAsset.safeTransferFrom(msg.sender, address(this), debtToRepay);
 
         if (treasury != address(0)) {
             try LiquidityPool(treasury).ASSET() returns (address poolAsset) {
                 if (poolAsset == debtAsset) {
-                    debtAsset.safeApprove(treasury, debt);
-                    LiquidityPool(treasury).repay(debt, debt);
+                    _ensureAllowance(debtAsset, treasury, debtToRepay);
+                    LiquidityPool(treasury).repay(principalToRepay, debtToRepay);
                 } else {
-                    debtAsset.safeTransfer(treasury, debt);
+                    debtAsset.safeTransfer(treasury, debtToRepay);
                 }
             } catch {
-                debtAsset.safeTransfer(treasury, debt);
+                debtAsset.safeTransfer(treasury, debtToRepay);
             }
         }
         PositionManager(positionManager).clearDebt(positionId);
         uint256 seized = PositionManager(positionManager).seizeCollateral(positionId, msg.sender);
 
         if (loanManager != address(0)) {
-            uint256 loanId = LoanManager(loanManager).positionLoans(positionId);
             if (loanId != 0) {
                 LoanManager(loanManager).markLiquidated(loanId, msg.sender);
             }
         }
 
-        emit LiquidationExecuted(positionId, msg.sender, debt, seized);
+        emit LiquidationExecuted(positionId, msg.sender, debtToRepay, seized);
+    }
+
+    function _ensureAllowance(address asset, address spender, uint256 required) internal {
+        uint256 current = IERC20(asset).allowance(address(this), spender);
+        if (current >= required) return;
+
+        if (current != 0) {
+            asset.safeApprove(spender, 0);
+        }
+        asset.safeApprove(spender, type(uint256).max);
     }
 }

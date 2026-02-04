@@ -119,6 +119,7 @@ contract DeployTabby {
         LiquidationEngine liquidationEngine = new LiquidationEngine(deployer);
 
         positionManager.setEngines(address(policyEngine), address(priceOracle));
+        positionManager.setLoanManager(address(loanManager));
         loanManager.setEngines(address(policyEngine), address(priceOracle), address(positionManager));
         loanManager.setLiquidityPool(address(securedPool));
 
