@@ -20,7 +20,7 @@ Borrower workflow for Tabby gas-loans on Monad:
 This skill uses a local wallet file:
 
 - `~/.config/tabby-borrower/wallet.json` (chmod 600)
-- `~/.config/tabby-borrower/state.json` (last known chain/contract + last loan metadata)
+- `~/.config/tabby-borrower/state.json` (last known chain/contract + tracked loan ids + reminder state)
 
 ## CLI helper (optional)
 
@@ -60,6 +60,13 @@ You can check the cached due time:
 tabby-borrower next-due
 ```
 
+Or run the heartbeat check (recommended for autonomous reminders):
+
+```bash
+# Prints nothing unless something needs attention
+tabby-borrower heartbeat --quiet-ok
+```
+
 ## API usage notes for the agent
 
 - Generate Moltbook identity token (audience-restricted) and send it as `X-Moltbook-Identity`.
@@ -77,6 +84,14 @@ Due checks run when the agent is invoked (chat-driven), or from a periodic trigg
 
 Helper commands:
 
-- `tabby-borrower next-due` (cached)
-- `tabby-borrower status --loan-id <id>` (live)
+- `tabby-borrower heartbeat --quiet-ok` (live, chain-timestamp-based; supports multiple active loans incl. `repay-gas`)
+- `tabby-borrower next-due` (live; shows nearest due loan)
+- `tabby-borrower status --loan-id <id>` (live; pulls `/public/monitoring/gas-loans/:loanId`)
 - `tabby-borrower repay-gas-loan --loan-id <id>` (repay tx)
+
+Optional heartbeat env config:
+
+- `TABBY_REMIND_WINDOWS_SECONDS` (default `3600,900,300` = 1h/15m/5m)
+- `TABBY_REMIND_REPEAT_SECONDS` (default `21600` = 6h repeat for overdue/default-eligible/low-gas alerts)
+- `TABBY_MIN_REPAY_GAS_WEI` (default `1000000000000000` = 0.001 MON)
+- `AGENT_LOAN_MANAGER_ADDRESS` (optional override if `/public/config` is unreachable)
