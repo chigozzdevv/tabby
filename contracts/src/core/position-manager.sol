@@ -20,6 +20,7 @@ contract PositionManager is RoleManager {
     error InvalidAsset();
     error PositionNotFound();
     error PositionAlreadyLiquidated();
+    error PositionHasLoan();
     error DebtAssetMismatch();
     error EnginesNotSet();
     error PriceUnavailable();
@@ -37,6 +38,8 @@ contract PositionManager is RoleManager {
 
     uint256 public nextPositionId;
     mapping(uint256 => Position) public positions;
+
+    bytes32 public constant LIQUIDATION_ROLE = keccak256("LIQUIDATION_ROLE");
 
     address public walletRegistry;
     address public policyEngine;
@@ -177,7 +180,7 @@ contract PositionManager is RoleManager {
         emit DebtUpdated(positionId, position.debtAsset, position.debt);
     }
 
-    function seizeCollateral(uint256 positionId, address to) public onlyRole(ADMIN_ROLE) returns (uint256 amount) {
+    function seizeCollateral(uint256 positionId, address to) public onlyRole(LIQUIDATION_ROLE) returns (uint256 amount) {
         Position storage position = positions[positionId];
         if (position.owner == address(0)) revert PositionNotFound();
         if (position.liquidated) revert PositionAlreadyLiquidated();
@@ -192,7 +195,11 @@ contract PositionManager is RoleManager {
         emit PositionLiquidated(positionId, to, amount);
     }
 
-    function liquidate(uint256 positionId) external onlyRole(ADMIN_ROLE) {
+    function liquidate(uint256 positionId) external onlyRole(LIQUIDATION_ROLE) {
+        if (loanManager != address(0)) {
+            uint256 loanId = LoanManagerLike(loanManager).positionLoans(positionId);
+            if (loanId != 0) revert PositionHasLoan();
+        }
         seizeCollateral(positionId, msg.sender);
     }
 

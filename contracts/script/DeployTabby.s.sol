@@ -137,6 +137,7 @@ contract DeployTabby {
             address(securedPool)
         );
         positionManager.grantRole(positionManager.ADMIN_ROLE(), address(liquidationEngine));
+        positionManager.grantRole(positionManager.LIQUIDATION_ROLE(), address(liquidationEngine));
         loanManager.grantRole(loanManager.ADMIN_ROLE(), address(liquidationEngine));
         securedPool.grantRole(securedPool.REPAY_ROLE(), address(liquidationEngine));
 

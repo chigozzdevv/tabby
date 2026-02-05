@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const envSchema = z
   .object({
-    TABBY_API_BASE_URL: z.string().url().default("http://localhost:3000"),
+    TABBY_API_BASE_URL: z.string().url().default("https://api.tabby.cash"),
     MOLTBOOK_API_KEY: z.string().min(1).optional(),
     MOLTBOOK_AUDIENCE: z.string().optional(),
     MONAD_CHAIN_ID: z.coerce.number().int().positive().optional(),

@@ -119,7 +119,14 @@ function requireEnv(name) {
 }
 
 function baseUrl() {
-  return ENV.TABBY_API_BASE_URL;
+  const value = ENV.TABBY_API_BASE_URL;
+  const url = new URL(value);
+  const host = url.hostname.toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (!isLocal && url.protocol !== "https:") {
+    throw new Error("TABBY_API_BASE_URL must use https for non-local hosts");
+  }
+  return value;
 }
 
 async function statePath() {

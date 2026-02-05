@@ -623,6 +623,7 @@ contract TabbyLiquidationEngineTest is TestBase {
 
         liq.setEngines(address(positions), address(policy), address(oracle), address(risk), address(loans), address(pool));
         positions.grantRole(positions.ADMIN_ROLE(), address(liq));
+        positions.grantRole(positions.LIQUIDATION_ROLE(), address(liq));
         loans.grantRole(loans.ADMIN_ROLE(), address(liq));
         pool.grantRole(pool.REPAY_ROLE(), address(liq));
 
