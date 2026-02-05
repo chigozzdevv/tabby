@@ -1,210 +1,130 @@
 # Tabby.cash
 
-Tabby.cash is a liquidity rail for autonomous agents on Monad.
+Tabby.cash is a policy gated liquidity rail for autonomous agents on Monad. Agents borrow using the `tabby-borrower` OpenClaw skill and repay on chain when due.
 
-Agents borrow using the `tabby-borrower` OpenClaw skill and repay onchain when due.
+## What it does
 
-Agents borrow to:
-
-- pay gas for onchain actions (deployments, swaps, repayments)
-- fund onchain payments (x402 payments after an HTTP 402 `Payment Required` response, swaps, and purchases)
-
-Tabby offers two loan types:
-
-- **Gas loans (native MON)**: short-duration, uncollateralized loans so agents can execute onchain actions when they have insufficient gas.
-- **Secured loans (WMON debt, ERC20 collateral)**: collateralized loans where borrowers lock ERC20 collateral and borrow WMON.
+- Agents can borrow gas loans to pay for on chain actions.
+- Agents can borrow secured loans using oracle verified ERC20 collateral.
+- Liquidity providers earn interest, with optional $TABBY rewards.
 
 ## Repository layout
 
-- `contracts/` — pools, loan managers, policies, oracle adapter, liquidation, rewards
-- `server/` — Fastify API: Moltbook identity verification, gas-loan offers + execution, activity/monitoring, pool snapshots
-- `skills/` — OpenClaw skills (includes `skills/tabby-borrower/`)
-- `client/` — web client
+- `contracts/` smart contracts for pools, loan managers, policy, oracle, risk, and rewards
+- `server/` Fastify API for identity verification, offers, execution, monitoring, and pool snapshots
+- `skills/` OpenClaw skills including `skills/tabby-borrower/`
+- `client/` web client
 
 ## Integrations
 
-- **OpenClaw**: runs the agent and loads skills.
-- **Moltbook**: bot identity + claim status (identity token used for API auth).
-- **Monad**: chain used for lending + repayments (MON and WMON).
-- **nad.fun**: `TABBY` token launch (rewards token).
-- **Chainlink-style feeds**: secured-lane oracle adapter expects `AggregatorV3Interface` feeds.
-- **Foundry**: build/test/deploy for contracts.
-- **Fastify + TypeScript**: server API.
-- **MongoDB**: server storage (offers, activity log, monitoring cache).
+- OpenClaw for agent execution and skills
+- Moltbook for agent identity verification
+- Monad for lending and repayment
+- Chainlink style feeds for secured loan pricing
+- Foundry for contract build and deployment
+- Fastify and MongoDB for the server
 
 ## Architecture
 
-### Onchain (contracts)
+### On chain
 
-- **Pools**
-  - `NativeLiquidityPool`: deposits/withdrawals in native MON.
-  - `LiquidityPool`: deposits/withdrawals in WMON (ERC20).
-- **Borrowing modules**
-  - `AgentLoanManager`: gas-loan execution via EIP-712 offers (Tabby signs; borrower signs).
-  - `LoanManager` + `PositionManager`: secured loans (ERC20 collateral, WMON debt).
-- **Risk**
-  - `BorrowerPolicyRegistry`: onchain per-borrower policy for gas loans.
-  - `PolicyEngine`: per-collateral parameters (LTV, liquidation threshold, interest rate).
-  - `ChainlinkPriceOracle`: reads prices from Chainlink-style aggregator feeds.
-  - `RiskEngine` + `LiquidationEngine`: health checks and liquidation path.
-- **Protocol fees + rewards**
-  - Pools mint protocol fee shares on interest.
-  - `PoolShareRewards`: stake pool shares (locks shares in the pool) and earn `TABBY`.
+- Pools
+  - `NativeLiquidityPool` for MON deposits and gas loans
+  - `LiquidityPool` for WMON deposits and secured loans
+- Loan modules
+  - `AgentLoanManager` for gas loans and EIP 712 offers
+  - `LoanManager` and `PositionManager` for secured loans
+- Risk and policy
+  - `BorrowerPolicyRegistry` for per borrower gas loan policy
+  - `PolicyEngine` for collateral parameters
+  - `ChainlinkPriceOracle` for feed prices
+  - `RiskEngine` and `LiquidationEngine` for liquidation flow
+- Rewards
+  - `PoolShareRewards` for staking pool shares and earning $TABBY
 
-### Offchain (server + skill)
+### Off chain
 
-- `server/`: validates Moltbook identity tokens, issues gas-loan offers, executes loans onchain, and exposes monitoring + liquidity snapshots.
-- `skills/tabby-borrower/`: OpenClaw borrower skill that requests/accepts gas loans and reports status (polls `activity`/`monitoring`).
+- `server/` validates Moltbook identity tokens, issues gas loan offers, executes loans, and exposes monitoring plus pool data
+- `skills/tabby-borrower/` requests offers, signs, executes, and repays
 
-## Liquidity providers (LPs)
+## Loan flows
 
-LPs deposit directly into the pools:
+### Gas loans
 
-- **MON gas pool**: `NativeLiquidityPool.deposit()` / `NativeLiquidityPool.withdraw(shares)`
-- **WMON secured pool**: approve WMON, then `LiquidityPool.deposit(amount)` / `LiquidityPool.withdraw(shares)`
+1. Borrower authenticates with a Moltbook identity token.
+2. Borrower requests an offer at `POST /loans/gas/offer`.
+3. Borrower signs the offer using EIP 712.
+4. Tabby executes `AgentLoanManager.executeLoan(...)` on chain and pays gas.
+5. Borrower repays via `AgentLoanManager.repay(loanId)` before `dueAt`.
 
-LP earnings come from interest paid by borrowers. Pool shares represent a pro‑rata claim on pool assets; interest increases pool value over time.
+Notes:
 
-### Protocol fees (interest skim)
+- One active gas loan per borrower by default.
+- `action=255` is reserved for repay gas topups.
+- Defaults can be written on chain after `dueAt + gracePeriodSeconds`.
 
-Pools take a protocol fee on **interest only** by minting additional pool shares to fee recipients (no asset transfers out of the pool).
+### Secured loans
 
-Default configuration:
+1. Borrower opens a position and locks ERC20 collateral.
+2. Borrower borrows WMON from the secured pool.
+3. Interest accrues until `dueAt`.
+4. Borrower repays principal plus interest.
+5. If the position is unhealthy, liquidators can repay and seize collateral.
 
-- **2% of interest** → rewards budget
-- **3% of interest** → reserve/ops
+Collateral must be enabled in `PolicyEngine` and have a valid oracle feed in `ChainlinkPriceOracle`.
 
-### TABBY rewards
+## Liquidity providers
 
-LPs stake pool shares into `PoolShareRewards` and earn `TABBY`.
+Deposits and withdrawals:
 
-Staking locks pool shares in the pool (`lockedShares`), so staked LP shares cannot be withdrawn until unstaked.
+- MON pool: `NativeLiquidityPool.deposit()` and `NativeLiquidityPool.withdraw(shares)`
+- WMON pool: approve WMON then `LiquidityPool.deposit(amount)` and `LiquidityPool.withdraw(shares)`
 
-## Economics
+### Fees and rewards
 
-### Lender yield
-
-- Borrowers pay interest.
-- Interest increases pool value for LPs (share price increases).
-
-### Protocol revenue
-
-- The pools skim a protocol fee on **interest only** by minting pool shares to fee recipients.
-- Default fee is **5% of interest**:
-  - **2% of interest** → rewards budget
-  - **3% of interest** → reserve/ops
-
-### Rewards funding (buyback-funded)
-
-- The protocol earns revenue in the same asset as the pool (MON for the native pool, WMON for the secured pool).
-- Fee recipients can redeem their pool shares for MON/WMON and buy `TABBY`.
-- `TABBY` is distributed to stakers by transferring `TABBY` into `PoolShareRewards` via `notifyRewardAmount(amount)`.
-
-## Borrowers
-
-### Gas loans (native MON)
-
-Gas loans are uncollateralized and short duration.
-
-Interest is simple interest (APR in bps) and accrues until `dueAt`.
-The rate and terms are set in the EIP-712 offer (`interestBps`, `dueAt`) and must pass the borrower’s onchain policy.
-
-Flow:
-
-1) Borrower authenticates to the server using a Moltbook identity token (audience-restricted).
-2) Borrower requests an offer from Tabby (`POST /loans/gas/offer`).
-3) Borrower signs the offer (EIP-712).
-4) Tabby executes `AgentLoanManager.executeLoan(...)` onchain and pays gas for that transaction.
-5) Borrower repays onchain via `AgentLoanManager.repay(loanId)` before `dueAt`.
-
-The server enforces “one active loan per borrower” by default. `action=255` is reserved for `repay-gas` topups so the borrower can submit `repay()` even if they hit 0 gas.
-
-Repayment is sent by the borrower wallet. The `tabby-borrower` skill includes `repay-gas-loan` to submit the onchain repayment transaction.
-
-Due time can be read from the onchain loan state (or via `GET /public/monitoring/gas-loans/:loanId`). The `tabby-borrower` skill also caches the last loan metadata in `~/.config/tabby-borrower/state.json`.
-
-If a loan is past `dueAt + gracePeriodSeconds`, anyone can call `AgentLoanManager.markDefault(loanId)` to write off remaining principal from the pool. The server should treat defaults as ineligible for future borrowing.
-
-### Secured loans (WMON debt, ERC20 collateral)
-
-Secured loans are collateralized and use WMON as the debt asset.
-
-Interest is simple interest (APR in bps) and accrues until `dueAt`.
-The default rate comes from `PolicyEngine` per collateral asset (and can override the caller-provided `interestBps`).
-
-Flow:
-
-1) Borrower opens a position and locks collateral (ERC20).
-2) Borrower borrows the debt asset from the pool.
-3) Interest accrues (simple interest) until `dueAt`.
-4) Borrower repays principal + interest in the debt asset.
-5) If the position becomes unhealthy, a liquidator can repay debt and seize collateral.
-
-Collateral is any ERC20 that is explicitly enabled in `PolicyEngine` and has a real oracle feed configured in `ChainlinkPriceOracle`.
+- Pools take protocol fees on interest only by minting pool shares to fee recipients.
+- Default fees are 2 percent to rewards and 3 percent to reserve ops.
+- `PoolShareRewards` is deployed only when `TABBY_TOKEN` is non zero.
+- Rewards are distributed by transferring $TABBY into `PoolShareRewards` and calling `notifyRewardAmount(amount)`.
 
 ## Monitoring
 
-- Gas loans (public):
-  - `GET /public/monitoring/gas-loans/:loanId`
-  - `GET /public/activity?loanId=:loanId`
-- Public server config (used by the borrower skill):
-  - `GET /public/config`
-- Liquidity snapshots:
-  - `GET /liquidity/pools`
+Public endpoints:
 
-### Activity indexing (server)
+- `GET /public/monitoring/gas-loans/:loanId`
+- `GET /public/activity?loanId=:loanId`
+- `GET /public/config`
+- `GET /liquidity/pools`
 
-The server indexes `AgentLoanManager` events into MongoDB so it can:
-
-- expose `/public/activity` and monitoring views, and
-- block borrowers that have defaulted.
-
-Activity indexing is controlled by `ACTIVITY_SYNC_ENABLED` and `ACTIVITY_START_BLOCK`.
-
-## Token (nad.fun)
-
-`TABBY` is Tabby’s rewards token.
-
-- `TABBY` is launched through nad.fun on Monad mainnet.
-- Lending assets remain **MON/WMON**.
+Activity indexing uses `ACTIVITY_SYNC_ENABLED` and `ACTIVITY_START_BLOCK`.
 
 ## Admin model
 
-The pools are designed to be **adminless after bootstrap**.
+Pools are intended to be adminless after bootstrap:
 
-Bootstrap requirements:
+- Grant pool roles to audited loan modules.
+- Set fee configuration and fee recipients.
+- Assign risk roles.
+- Revoke pool admin role after setup.
 
-- Grant pool `BORROW_ROLE` / `REPAY_ROLE` only to the audited loan modules.
-- Configure fee settings and fee recipients.
-- Configure `RISK_ROLE` (risk committee) and `STAKE_ROLE` (share staking contract).
-
-Adminless pool (after bootstrap):
-
-- Revoke `ADMIN_ROLE` from the pool so:
-  - no new roles can be granted
-  - fee settings and wallet registry cannot be changed
-  - only pre-authorized modules can borrow/repay
-
-Other components (oracle feeds, policy engine, signer keys) are still governance-sensitive unless you also lock them down.
-
-`DeployTabby.s.sol` revokes pool `ADMIN_ROLE` by default (`ADMINLESS_NATIVE_POOL=true`, `ADMINLESS_SECURED_POOL=true`).
+Other components such as policy and oracle configuration remain governance sensitive unless locked down.
 
 ## Deployed addresses
 
 Fill these after deployment:
 
-- `TABBY_TOKEN` (rewards token): `0x...`
-- `AGENT_LOAN_MANAGER` (gas-loan): `0x...`
-- `NATIVE_LIQUIDITY_POOL` (MON pool): `0x...`
-- `SECURED_LIQUIDITY_POOL` (WMON pool): `0x...`
-- `POOL_SHARE_REWARDS_NATIVE`: `0x...`
-- `POOL_SHARE_REWARDS_SECURED`: `0x...`
+- `TABBY_TOKEN`
+- `AGENT_LOAN_MANAGER`
+- `NATIVE_LIQUIDITY_POOL`
+- `SECURED_LIQUIDITY_POOL`
+- `POOL_SHARE_REWARDS_NATIVE`
+- `POOL_SHARE_REWARDS_SECURED`
 
 ## Requirements
 
 - Node.js 18+
-- Foundry (`forge`, `cast`)
-- MongoDB (server storage)
+- Foundry
+- MongoDB
 
 ## Local development
 
@@ -224,9 +144,7 @@ npm install
 npm run dev
 ```
 
-See `server/.env.example` for configuration (including `MOLTBOOK_APP_KEY` for Moltbook identity verification).
-
-### Borrower skill (OpenClaw)
+### Borrower skill
 
 ```bash
 cd skills/tabby-borrower
@@ -238,13 +156,21 @@ tabby-borrower request-gas-loan --principal-wei 5000000000000000 --interest-bps 
 tabby-borrower repay-gas-loan --loan-id 1
 ```
 
-See `skills/tabby-borrower/SKILL.md` for the full workflow.
+See `skills/tabby-borrower/SKILL.md` for full workflow.
 
-## Deployment (contracts)
+### Client
 
-The deploy script is `contracts/script/DeployTabby.s.sol`.
+```bash
+cd client
+npm install
+npm run dev
+```
 
-Dry-run estimate on mainnet:
+## Deployment
+
+Deploy script: `contracts/script/DeployTabby.s.sol`.
+
+Dry run:
 
 ```bash
 cd contracts
@@ -260,28 +186,24 @@ PRIVATE_KEY=... TABBY_SIGNER=0x... forge script script/DeployTabby.s.sol:DeployT
   --rpc-url https://rpc.monad.xyz --broadcast --sig "run()"
 ```
 
-Common env vars for deployment:
+Common deploy env vars:
 
-- `PRIVATE_KEY` (deployer)
-- `TABBY_SIGNER` (must match the server’s `TABBY_PRIVATE_KEY` address)
-- `GOVERNANCE` (admin address for governance-controlled contracts)
-- `TABBY_TOKEN` (TABBY token address; deploys `PoolShareRewards` contracts)
-- `POOL_REWARDS_FEE_BPS` (default `200`)
-- `POOL_RESERVE_FEE_BPS` (default `300`)
-- `POOL_REWARDS_FEE_RECIPIENT`, `POOL_RESERVE_FEE_RECIPIENT`
+- `PRIVATE_KEY`
+- `TABBY_SIGNER` (must match server `TABBY_PRIVATE_KEY` address)
+- `TABBY_TOKEN` (deploys `PoolShareRewards` if non zero)
+- `GOVERNANCE`
+- `POOL_REWARDS_FEE_BPS`
+- `POOL_RESERVE_FEE_BPS`
+- `POOL_REWARDS_FEE_RECIPIENT`
+- `POOL_RESERVE_FEE_RECIPIENT`
+- `WMON_FEED`, `COLLATERAL_ASSET`, `COLLATERAL_FEED` for secured loan policy setup
 
 ## Operations
 
-- Fund the pools:
-  - MON pool: `NativeLiquidityPool.deposit()`
-  - WMON pool: approve WMON then `LiquidityPool.deposit(amount)`
-- Configure borrower gas-loan policy using `BorrowerPolicyRegistry`.
-- Configure secured-lane collateral policies and oracle feeds (required before enabling collateral borrowing).
-- Fund rewards (buyback flow):
-  - buy `TABBY` with accumulated protocol fees offchain/onchain
-  - call `PoolShareRewards.notifyRewardAmount(amount)`
+- Fund pools
+  - MON pool `NativeLiquidityPool.deposit()`
+  - WMON pool `LiquidityPool.deposit(amount)`
+- Configure borrower policy in `BorrowerPolicyRegistry`
+- Configure collateral policy and feeds in `PolicyEngine` and `ChainlinkPriceOracle`
+- Fund rewards by calling `PoolShareRewards.notifyRewardAmount(amount)`
 
-## Security notes
-
-- This code has not been audited.
-- The `GOVERNANCE` address controls policy/oracle configuration.
