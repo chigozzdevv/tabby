@@ -60,5 +60,8 @@ export const faqs = [
   },
 ];
 
-export const tokenAddress = "0x7abB71a5e2e6cD4b8cA3f2E9d1c0b4aF2f7c9a11";
-export const tokenExplorerUrl = `https://monadscan.com/address/${tokenAddress}`;
+const envTokenAddress = process.env.NEXT_PUBLIC_TABBY_TOKEN_ADDRESS;
+
+export const tokenAddress = envTokenAddress ?? "0x93A7006bD345a7dFfF35910Da2DB97bA4Cb67777";
+export const tokenExplorerUrl =
+  process.env.NEXT_PUBLIC_TABBY_EXPLORER_URL ?? `https://nad.fun/tokens/${tokenAddress}`;
