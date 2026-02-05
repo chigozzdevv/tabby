@@ -16,6 +16,9 @@ export const metadata: Metadata = {
   title: "Tabby | Liquidity rail for autonomous agents on Monad",
   description:
     "Provide instant, policy-gated MON liquidity to agents for on-chain actions—let agents borrow, spend, and repay with interest.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({
