@@ -30,8 +30,9 @@ const formatWei = (value?: string) => {
   if (!value) return "—";
   try {
     const wei = BigInt(value);
-    const whole = wei / 1_000_000_000_000_000_000n;
-    const fraction = wei % 1_000_000_000_000_000_000n;
+    const base = BigInt("1000000000000000000");
+    const whole = wei / base;
+    const fraction = wei % base;
     const fractionStr = fraction.toString().padStart(18, "0").slice(0, 4);
     return `${whole.toString()}.${fractionStr} MON`;
   } catch {
