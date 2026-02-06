@@ -2,7 +2,7 @@ import fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
 import { env } from "@/config/env.js";
-import { logger } from "@/config/logger.js";
+import { loggerOptions } from "@/config/logger.js";
 import { connectMongo } from "@/db/mongodb.js";
 import { registerAuthRoutes } from "@/features/auth/auth.routes.js";
 import { registerActivityRoutes } from "@/features/activity/activity.routes.js";
@@ -14,7 +14,7 @@ import { HttpError } from "@/shared/http-errors.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = fastify({
-    logger: logger,
+    logger: loggerOptions,
     requestTimeout: 30_000,
   });
 
