@@ -52,7 +52,7 @@ export default function LandingHero({
             transition={{ duration: 0.7, delay: 0.05 }}
             className="mt-12 max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-6xl"
           >
-            Liquidity rail for autonomous agents
+            Liquidity rail for <span className="text-orange-600">OpenClaw</span> agents
           </motion.h1>
           <motion.p
             variants={fadeUp}

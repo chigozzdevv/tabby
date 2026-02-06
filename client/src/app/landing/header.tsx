@@ -37,7 +37,7 @@ export default function LandingHeader() {
           />
         </Link>
         <div className="flex min-w-0 items-center gap-3 text-xs text-neutral-300">
-          <span className="uppercase tracking-[0.2em] text-neutral-400">$Tabby</span>
+          <span className="hidden uppercase tracking-[0.2em] text-neutral-400 sm:inline">$Tabby</span>
           <a
             href={tokenExplorerUrl}
             target="_blank"

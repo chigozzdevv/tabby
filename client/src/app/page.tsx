@@ -21,6 +21,7 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const stored = window.localStorage.getItem("tabby.walletAddress");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setWalletAddress(stored);
   }, []);
 

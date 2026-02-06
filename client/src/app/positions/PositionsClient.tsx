@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   createWalletClient,
   custom,
+  formatUnits,
   parseEther,
   parseUnits,
   type Address,
@@ -104,6 +105,20 @@ const formatWei = (value?: string, unit = "MON") => {
   }
 };
 
+const formatUnitsCompact = (value?: string, decimals = 18, maxFractionDigits = 4) => {
+  if (!value) return "—";
+  try {
+    const formatted = formatUnits(BigInt(value), decimals);
+    const [whole, fraction] = formatted.split(".");
+    const wholeStr = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    if (!fraction) return wholeStr;
+    const trimmed = fraction.slice(0, maxFractionDigits).replace(/0+$/, "");
+    return trimmed ? `${wholeStr}.${trimmed}` : wholeStr;
+  } catch {
+    return "—";
+  }
+};
+
 const formatPercent = (numerator?: string, denominator?: string) => {
   if (!numerator || !denominator) return "—";
   try {
@@ -128,6 +143,26 @@ const toBigIntOrZero = (value?: string) => {
     return BigInt(value);
   } catch {
     return BigInt(0);
+  }
+};
+
+const parseEtherOrNull = (value: string) => {
+  if (!value) return null;
+  try {
+    const wei = parseEther(value);
+    return wei > BigInt(0) ? wei : null;
+  } catch {
+    return null;
+  }
+};
+
+const parseUnitsOrNull = (value: string, decimals: number) => {
+  if (!value) return null;
+  try {
+    const units = parseUnits(value, decimals);
+    return units > BigInt(0) ? units : null;
+  } catch {
+    return null;
   }
 };
 
@@ -589,6 +624,16 @@ export default function PositionsClient() {
   const nativeEarned = toBigIntOrZero(rewards?.native?.earned);
   const securedEarned = toBigIntOrZero(rewards?.secured?.earned);
 
+  const nativeDepositWei = parseEtherOrNull(nativeDeposit.trim());
+  const nativeWithdrawSharesWei = parseUnitsOrNull(nativeWithdrawShares.trim(), 18);
+  const nativeStakeSharesWei = parseUnitsOrNull(nativeStakeShares.trim(), 18);
+  const nativeUnstakeSharesWei = parseUnitsOrNull(nativeUnstakeShares.trim(), 18);
+
+  const securedDepositWei = parseUnitsOrNull(securedDeposit.trim(), 18);
+  const securedWithdrawSharesWei = parseUnitsOrNull(securedWithdrawShares.trim(), 18);
+  const securedStakeSharesWei = parseUnitsOrNull(securedStakeShares.trim(), 18);
+  const securedUnstakeSharesWei = parseUnitsOrNull(securedUnstakeShares.trim(), 18);
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
@@ -724,7 +769,7 @@ export default function PositionsClient() {
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Shares</p>
-                      <p className="mt-2 text-sm font-semibold text-white">{positionNative.shares}</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{formatUnitsCompact(positionNative.shares)}</p>
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Estimated assets</p>
@@ -761,7 +806,7 @@ export default function PositionsClient() {
                     <button
                       type="button"
                       onClick={handleNativeDeposit}
-                      disabled={isBusy || isWrongChain}
+                      disabled={nativeDepositWei === null || isBusy || isWrongChain}
                       className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {pendingTxLabel === "Native deposit" ? "Processing..." : "Deposit"}
@@ -779,7 +824,12 @@ export default function PositionsClient() {
                       <button
                         type="button"
                         onClick={handleNativeWithdraw}
-                        disabled={isBusy || isWrongChain}
+                        disabled={
+                          nativeWithdrawSharesWei === null ||
+                          nativeWithdrawSharesWei > nativeShares ||
+                          isBusy ||
+                          isWrongChain
+                        }
                         className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {pendingTxLabel === "Native withdraw" ? "Processing..." : "Withdraw"}
@@ -802,7 +852,12 @@ export default function PositionsClient() {
                         <button
                           type="button"
                           onClick={handleNativeStake}
-                          disabled={isBusy || isWrongChain}
+                          disabled={
+                            nativeStakeSharesWei === null ||
+                            nativeStakeSharesWei > nativeShares ||
+                            isBusy ||
+                            isWrongChain
+                          }
                           className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {pendingTxLabel === "Stake native shares" ? "Processing..." : "Stake"}
@@ -821,7 +876,12 @@ export default function PositionsClient() {
                         <button
                           type="button"
                           onClick={handleNativeUnstake}
-                          disabled={isBusy || isWrongChain}
+                          disabled={
+                            nativeUnstakeSharesWei === null ||
+                            nativeUnstakeSharesWei > nativeStakedShares ||
+                            isBusy ||
+                            isWrongChain
+                          }
                           className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {pendingTxLabel === "Unstake native shares" ? "Processing..." : "Unstake"}
@@ -854,7 +914,9 @@ export default function PositionsClient() {
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Shares</p>
-                      <p className="mt-2 text-sm font-semibold text-white">{positionSecured.shares}</p>
+                      <p className="mt-2 text-sm font-semibold text-white">
+                        {formatUnitsCompact(positionSecured.shares)}
+                      </p>
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Estimated assets</p>
@@ -891,7 +953,7 @@ export default function PositionsClient() {
                     <button
                       type="button"
                       onClick={handleSecuredDeposit}
-                      disabled={!poolData?.secured?.asset || isBusy || isWrongChain}
+                      disabled={securedDepositWei === null || !poolData?.secured?.asset || isBusy || isWrongChain}
                       className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pendingTxLabel === "Secured deposit" ? "Processing..." : "Approve + Deposit"}
@@ -909,7 +971,12 @@ export default function PositionsClient() {
                       <button
                         type="button"
                         onClick={handleSecuredWithdraw}
-                        disabled={isBusy || isWrongChain}
+                        disabled={
+                          securedWithdrawSharesWei === null ||
+                          securedWithdrawSharesWei > securedShares ||
+                          isBusy ||
+                          isWrongChain
+                        }
                         className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {pendingTxLabel === "Secured withdraw" ? "Processing..." : "Withdraw"}
@@ -932,7 +999,12 @@ export default function PositionsClient() {
                         <button
                           type="button"
                           onClick={handleSecuredStake}
-                          disabled={isBusy || isWrongChain}
+                          disabled={
+                            securedStakeSharesWei === null ||
+                            securedStakeSharesWei > securedShares ||
+                            isBusy ||
+                            isWrongChain
+                          }
                           className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {pendingTxLabel === "Stake secured shares" ? "Processing..." : "Stake"}
@@ -951,7 +1023,12 @@ export default function PositionsClient() {
                         <button
                           type="button"
                           onClick={handleSecuredUnstake}
-                          disabled={isBusy || isWrongChain}
+                          disabled={
+                            securedUnstakeSharesWei === null ||
+                            securedUnstakeSharesWei > securedStakedShares ||
+                            isBusy ||
+                            isWrongChain
+                          }
                           className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {pendingTxLabel === "Unstake secured shares" ? "Processing..." : "Unstake"}
