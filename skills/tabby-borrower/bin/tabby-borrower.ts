@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { createPublicClient, createWalletClient, formatEther, http } from "viem";
+import { createPublicClient, createWalletClient, decodeEventLog, formatEther, formatUnits, http, parseUnits } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { getEnv } from "../env.js";
 
@@ -18,13 +18,32 @@ type LastGasLoan = {
   action: number;
 };
 
+type LastSecuredLoan = {
+  loanId: number;
+  positionId: number;
+  borrower: string;
+  asset: string;
+  principalWei: string;
+  interestBps: number;
+  collateralAsset: string;
+  collateralAmountWei: string;
+  dueAt: number;
+};
+
 type BorrowerState = {
   chainId?: number;
   agentLoanManager?: string;
+  loanManager?: string;
+  positionManager?: string;
+  securedPool?: string;
+  collateralAsset?: string;
   trackedGasLoanIds?: number[];
+  trackedSecuredLoanIds?: number[];
+  securedLoanPositions?: Record<string, number>;
   lastReminderAt?: number;
   lastLowGasAt?: number;
   lastGasLoan?: Partial<LastGasLoan>;
+  lastSecuredLoan?: Partial<LastSecuredLoan>;
 };
 
 type GasLoanState = {
@@ -76,6 +95,8 @@ async function loadLocalEnv() {
 
 await loadLocalEnv();
 const ENV = getEnv();
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const MAX_UINT256 = (1n << 256n) - 1n;
 
 function usage() {
   console.log(
@@ -89,6 +110,11 @@ function usage() {
       "  repay-gas-loan --loan-id <id> [--amount-wei <wei>]",
       "  next-due [--borrower <0x...>]",
       "  heartbeat [--borrower <0x...>] [--quiet-ok] [--json]",
+      "  approve-collateral [--amount <n>|--amount-wei <wei>] [--collateral-asset <0x...>] [--max]",
+      "  open-secured-loan --principal <n>|--principal-wei <wei> --collateral-amount <n>|--collateral-amount-wei <wei> [--duration-seconds <sec>|--due-at <unix>] [--interest-bps <bps>] [--collateral-asset <0x...>] [--no-auto-approve]",
+      "  secured-status --loan-id <id>",
+      "  repay-secured-loan --loan-id <id> [--amount <n>|--amount-wei <wei>] [--no-auto-approve]",
+      "  withdraw-collateral --loan-id <id> [--position-id <id>] [--amount <n>|--amount-wei <wei>]",
       "",
       "Env:",
       "  TABBY_API_BASE_URL   (default: http://localhost:3000)",
@@ -97,6 +123,10 @@ function usage() {
       "  MONAD_CHAIN_ID / CHAIN_ID   (optional; defaults to 10143 unless returned by Tabby or cached)",
       "  MONAD_RPC_URL / RPC_URL     (optional; defaults to https://testnet-rpc.monad.xyz or https://rpc.monad.xyz)",
       "  AGENT_LOAN_MANAGER_ADDRESS         (optional; overrides cached/public config)",
+      "  LOAN_MANAGER_ADDRESS               (secured loans; can be discovered/cached)",
+      "  POSITION_MANAGER_ADDRESS           (secured loans; optional override)",
+      "  SECURED_POOL_ADDRESS               (secured loans; optional override)",
+      "  COLLATERAL_ASSET                   (secured loans; default collateral token)",
       "  TABBY_REMIND_SECONDS                (optional; default: 3600)",
       "  TABBY_REMIND_REPEAT_SECONDS         (optional; default: 21600)",
       "  TABBY_MIN_REPAY_GAS_WEI             (optional; default: 1000000000000000)",
@@ -110,6 +140,12 @@ function getArg(name) {
   const arg = process.argv[idx];
   if (arg.includes("=")) return arg.split("=").slice(1).join("=");
   return process.argv[idx + 1];
+}
+
+function asAddress(value: string | undefined, label: string) {
+  if (value === undefined) return undefined;
+  if (!ADDRESS_RE.test(value)) throw new Error(`Invalid ${label}`);
+  return value;
 }
 
 function requireEnv(name) {
@@ -140,7 +176,13 @@ async function loadState(): Promise<BorrowerState & { path: string }> {
     .object({
       chainId: z.number().int().positive().optional(),
       agentLoanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      loanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      positionManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      securedPool: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      collateralAsset: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
       trackedGasLoanIds: z.array(z.number().int().positive()).optional(),
+      trackedSecuredLoanIds: z.array(z.number().int().positive()).optional(),
+      securedLoanPositions: z.record(z.string(), z.number().int().positive()).optional(),
       lastReminderAt: z.number().int().positive().optional(),
       lastLowGasAt: z.number().int().positive().optional(),
       lastGasLoan: z
@@ -151,6 +193,19 @@ async function loadState(): Promise<BorrowerState & { path: string }> {
           interestBps: z.number().int().min(0),
           dueAt: z.number().int().positive(),
           action: z.number().int().min(0).max(255),
+        })
+        .optional(),
+      lastSecuredLoan: z
+        .object({
+          loanId: z.number().int().positive(),
+          positionId: z.number().int().positive(),
+          borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+          asset: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+          principalWei: z.string().regex(/^\d+$/),
+          interestBps: z.number().int().min(0),
+          collateralAsset: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+          collateralAmountWei: z.string().regex(/^\d+$/),
+          dueAt: z.number().int().positive(),
         })
         .optional(),
     })
@@ -276,42 +331,34 @@ async function fetchTabbyPublicConfig() {
     const json = await res.json();
     const data = json?.data;
     if (!json?.ok) return undefined;
-    const schema = z.object({
-      chainId: z.number().int().positive(),
-      agentLoanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-    });
+    const schema = z
+      .object({
+        chainId: z.number().int().positive().optional(),
+        agentLoanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+        loanManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+        positionManager: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+        securedPool: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+        collateralAsset: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      })
+      .passthrough();
     return schema.parse(data);
   } catch {
     return undefined;
   }
 }
 
-async function getChainConfigFromStateOrEnv() {
+async function getRpcConfigFromStateOrEnv() {
   const chainIdEnv = ENV.MONAD_CHAIN_ID ?? ENV.CHAIN_ID;
   const rpcUrlEnv = ENV.MONAD_RPC_URL ?? ENV.RPC_URL;
-  const agentLoanManagerEnv = ENV.AGENT_LOAN_MANAGER_ADDRESS;
 
   const publicConfig = await fetchTabbyPublicConfig();
-
-  let state: BorrowerState | undefined;
-  try {
-    state = await loadState();
-  } catch {
-    state = undefined;
-  }
+  const state = (await tryLoadState()) ?? undefined;
 
   const chainId = chainIdEnv ?? publicConfig?.chainId ?? state?.chainId ?? 10143;
   if (!Number.isInteger(chainId) || chainId <= 0) throw new Error("Invalid MONAD_CHAIN_ID");
 
   const rpcUrl = rpcUrlEnv ?? defaultRpcUrl(chainId);
   if (!rpcUrl) throw new Error("Missing MONAD_RPC_URL");
-
-  const agentLoanManager = agentLoanManagerEnv ?? publicConfig?.agentLoanManager ?? state?.agentLoanManager;
-  if (!agentLoanManager) {
-    throw new Error(
-      "Missing agentLoanManager; set AGENT_LOAN_MANAGER_ADDRESS, or ensure /public/config is reachable, or add it to ~/.config/tabby-borrower/state.json"
-    );
-  }
 
   const chain = {
     id: chainId,
@@ -320,7 +367,70 @@ async function getChainConfigFromStateOrEnv() {
     rpcUrls: { default: { http: [rpcUrl] } },
   };
 
+  return { chain, rpcUrl, publicConfig, state };
+}
+
+async function getGasLoanConfigFromStateOrEnv() {
+  const agentLoanManagerEnv = ENV.AGENT_LOAN_MANAGER_ADDRESS;
+  const { chain, rpcUrl, publicConfig, state } = await getRpcConfigFromStateOrEnv();
+
+  const agentLoanManager = agentLoanManagerEnv ?? publicConfig?.agentLoanManager ?? state?.agentLoanManager;
+  if (!agentLoanManager) {
+    throw new Error(
+      "Missing agentLoanManager; set AGENT_LOAN_MANAGER_ADDRESS, or ensure /public/config is reachable, or add it to ~/.config/tabby-borrower/state.json"
+    );
+  }
+
   return { chain, rpcUrl, agentLoanManager };
+}
+
+async function loadBorrowerAccount() {
+  const wallet = await loadWallet();
+  const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
+  return { wallet, account };
+}
+
+async function getSecuredLoanConfigFromStateOrEnv() {
+  const { chain, rpcUrl, publicConfig, state } = await getRpcConfigFromStateOrEnv();
+  const loanManagerEnv = asAddress(ENV.LOAN_MANAGER_ADDRESS, "LOAN_MANAGER_ADDRESS");
+  const positionManagerEnv = asAddress(ENV.POSITION_MANAGER_ADDRESS, "POSITION_MANAGER_ADDRESS");
+  const securedPoolEnv = asAddress(ENV.SECURED_POOL_ADDRESS, "SECURED_POOL_ADDRESS");
+  const collateralAssetEnv = asAddress(ENV.COLLATERAL_ASSET, "COLLATERAL_ASSET");
+
+  const loanManager = loanManagerEnv ?? publicConfig?.loanManager ?? state?.loanManager;
+  if (!loanManager) {
+    throw new Error("Missing loanManager; set LOAN_MANAGER_ADDRESS or add it to ~/.config/tabby-borrower/state.json");
+  }
+
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
+
+  const [pmFromChain, poolFromChain] = await Promise.all([
+    publicClient.readContract({ address: loanManager, abi: loanManagerAbi, functionName: "positionManager" }),
+    publicClient.readContract({ address: loanManager, abi: loanManagerAbi, functionName: "liquidityPool" }),
+  ]);
+
+  const positionManager = positionManagerEnv ?? publicConfig?.positionManager ?? state?.positionManager ?? pmFromChain;
+  const securedPool = securedPoolEnv ?? publicConfig?.securedPool ?? state?.securedPool ?? poolFromChain;
+
+  if (!positionManager || !ADDRESS_RE.test(positionManager)) throw new Error("Failed to resolve positionManager");
+  if (!securedPool || !ADDRESS_RE.test(securedPool) || /^0x0{40}$/.test(securedPool)) {
+    throw new Error("Failed to resolve securedPool (LoanManager.liquidityPool is zero)");
+  }
+
+  const debtAsset = await publicClient.readContract({ address: securedPool, abi: liquidityPoolReadAbi, functionName: "ASSET" });
+  if (!debtAsset || !ADDRESS_RE.test(debtAsset)) throw new Error("Failed to resolve secured pool asset");
+
+  const collateralAsset = collateralAssetEnv ?? publicConfig?.collateralAsset ?? state?.collateralAsset;
+
+  await updateState({
+    chainId: chain.id,
+    loanManager,
+    positionManager,
+    securedPool,
+    collateralAsset: collateralAsset ?? state?.collateralAsset,
+  });
+
+  return { chain, rpcUrl, publicClient, loanManager, positionManager, securedPool, debtAsset, collateralAsset };
 }
 
 async function resolveBorrowerAddress() {
@@ -392,6 +502,173 @@ const agentLoanManagerReadAbi = [
   },
 ];
 
+const erc20Abi = [
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "symbol",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "string" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+];
+
+const liquidityPoolReadAbi = [
+  {
+    type: "function",
+    name: "ASSET",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+];
+
+const loanManagerAbi = [
+  {
+    type: "function",
+    name: "positionManager",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "liquidityPool",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "loans",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      { name: "borrower", type: "address" },
+      { name: "asset", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "interestBps", type: "uint256" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "openedAt", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+      { name: "lastAccruedAt", type: "uint256" },
+      { name: "accruedInterest", type: "uint256" },
+      { name: "closed", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "loanPositions",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "outstanding",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "openLoan",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "asset", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "interestBps", type: "uint256" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "repay",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "loanId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "event",
+    name: "LoanOpened",
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: "loanId", type: "uint256" },
+      { indexed: true, name: "positionId", type: "uint256" },
+      { indexed: true, name: "borrower", type: "address" },
+      { indexed: false, name: "asset", type: "address" },
+      { indexed: false, name: "principal", type: "uint256" },
+    ],
+  },
+];
+
+const positionManagerAbi = [
+  {
+    type: "function",
+    name: "positions",
+    stateMutability: "view",
+    inputs: [{ name: "positionId", type: "uint256" }],
+    outputs: [
+      { name: "owner", type: "address" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "debtAsset", type: "address" },
+      { name: "debt", type: "uint256" },
+      { name: "liquidated", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "removeCollateral",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "positionId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+];
+
 async function readGasLoanState(publicClient: any, agentLoanManager: string, loanId: number): Promise<GasLoanState> {
   const id = BigInt(loanId);
   const [loan, outstanding] = await Promise.all([
@@ -423,7 +700,7 @@ async function heartbeat() {
   if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
 
   const state: BorrowerState = (await tryLoadState()) ?? {};
-  const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
+  const { chain, rpcUrl, agentLoanManager } = await getGasLoanConfigFromStateOrEnv();
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
 
   const now = await chainNowSeconds(publicClient);
@@ -722,7 +999,7 @@ async function status() {
     // ignore and fall back to onchain
   }
 
-  const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
+  const { chain, rpcUrl, agentLoanManager } = await getGasLoanConfigFromStateOrEnv();
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
   const now = await chainNowSeconds(publicClient);
   const graceSecondsRaw = await publicClient.readContract({
@@ -759,7 +1036,7 @@ async function nextDue() {
   const borrower = await resolveBorrowerAddress();
   if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
 
-  const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
+  const { chain, rpcUrl, agentLoanManager } = await getGasLoanConfigFromStateOrEnv();
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
   const now = await chainNowSeconds(publicClient);
 
@@ -825,7 +1102,7 @@ async function repayGasLoan() {
 
   const amountWeiArg = getArg("--amount-wei");
 
-  const { chain, rpcUrl, agentLoanManager } = await getChainConfigFromStateOrEnv();
+  const { chain, rpcUrl, agentLoanManager } = await getGasLoanConfigFromStateOrEnv();
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
 
   const outstanding = await publicClient.readContract({
@@ -876,6 +1153,508 @@ async function repayGasLoan() {
   );
 }
 
+function parseWei(value: string | undefined, label: string) {
+  if (!value) return undefined;
+  if (!/^\d+$/.test(value)) throw new Error(`Invalid ${label}`);
+  return BigInt(value);
+}
+
+async function readTokenDecimals(publicClient: any, token: string) {
+  const d = await publicClient.readContract({ address: token, abi: erc20Abi, functionName: "decimals" });
+  const decimals = Number(d);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("Failed to read token decimals");
+  return decimals;
+}
+
+async function ensureAllowance(params: {
+  chain: any;
+  rpcUrl: string;
+  publicClient: any;
+  walletClient: any;
+  token: string;
+  owner: string;
+  spender: string;
+  required: bigint;
+  desired?: bigint;
+}) {
+  const current = await params.publicClient.readContract({
+    address: params.token,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [params.owner, params.spender],
+  });
+  if (BigInt(current) >= params.required) return;
+
+  const desired = params.desired === undefined ? params.required : params.desired;
+  if (desired < params.required) throw new Error("Invalid desired allowance");
+
+  const walletClient = params.walletClient;
+  if (BigInt(current) !== 0n) {
+    const hash0 = await walletClient.writeContract({
+      address: params.token,
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [params.spender, 0n],
+    });
+    await params.publicClient.waitForTransactionReceipt({ hash: hash0 });
+  }
+
+  const hash = await walletClient.writeContract({
+    address: params.token,
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [params.spender, desired],
+  });
+  await params.publicClient.waitForTransactionReceipt({ hash });
+}
+
+async function approveCollateral() {
+  const amountWeiArg = parseWei(getArg("--amount-wei"), "--amount-wei");
+  const amountArg = getArg("--amount");
+  const max = process.argv.includes("--max");
+
+  const { wallet, account } = await loadBorrowerAccount();
+  const cfg = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = cfg.publicClient;
+  const collateralOverride = asAddress(getArg("--collateral-asset"), "--collateral-asset");
+  const collateralAsset = collateralOverride ?? cfg.collateralAsset;
+  if (!collateralAsset) throw new Error("Missing collateral asset (set COLLATERAL_ASSET or pass --collateral-asset)");
+
+  const decimals = await readTokenDecimals(publicClient, collateralAsset);
+  const amountWei =
+    max ? MAX_UINT256 : amountWeiArg ?? (amountArg ? parseUnits(amountArg, decimals) : undefined);
+  if (amountWei === undefined) throw new Error("Missing --amount/--amount-wei (or pass --max)");
+
+  const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
+  const owner = wallet.address;
+
+  if (!max) {
+    await ensureAllowance({
+      chain: cfg.chain,
+      rpcUrl: cfg.rpcUrl,
+      publicClient,
+      walletClient,
+      token: collateralAsset,
+      owner,
+      spender: cfg.positionManager,
+      required: amountWei,
+    });
+  } else {
+    await ensureAllowance({
+      chain: cfg.chain,
+      rpcUrl: cfg.rpcUrl,
+      publicClient,
+      walletClient,
+      token: collateralAsset,
+      owner,
+      spender: cfg.positionManager,
+      required: MAX_UINT256,
+    });
+  }
+
+  const allowance = await publicClient.readContract({
+    address: collateralAsset,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [owner, cfg.positionManager],
+  });
+
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        data: {
+          owner,
+          collateralAsset,
+          positionManager: cfg.positionManager,
+          allowanceWei: BigInt(allowance).toString(),
+        },
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function openSecuredLoan() {
+  const principalWeiArg = parseWei(getArg("--principal-wei"), "--principal-wei");
+  const principalArg = getArg("--principal");
+  const collateralAmountWeiArg = parseWei(getArg("--collateral-amount-wei"), "--collateral-amount-wei");
+  const collateralAmountArg = getArg("--collateral-amount");
+  const durationSecondsArg = getArg("--duration-seconds");
+  const dueAtArg = getArg("--due-at");
+  const interestBpsRaw = getArg("--interest-bps");
+  const noAutoApprove = process.argv.includes("--no-auto-approve");
+
+  const { wallet, account } = await loadBorrowerAccount();
+  const cfg = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = cfg.publicClient;
+
+  const collateralOverride = asAddress(getArg("--collateral-asset"), "--collateral-asset");
+  const collateralAsset = collateralOverride ?? cfg.collateralAsset;
+  if (!collateralAsset) throw new Error("Missing collateral asset (set COLLATERAL_ASSET or pass --collateral-asset)");
+
+  const debtDecimals = await readTokenDecimals(publicClient, cfg.debtAsset);
+  const collateralDecimals = await readTokenDecimals(publicClient, collateralAsset);
+
+  const principalWei = principalWeiArg ?? (principalArg ? parseUnits(principalArg, debtDecimals) : undefined);
+  if (principalWei === undefined || principalWei <= 0n) throw new Error("Missing --principal/--principal-wei");
+
+  const collateralAmountWei =
+    collateralAmountWeiArg ?? (collateralAmountArg ? parseUnits(collateralAmountArg, collateralDecimals) : undefined);
+  if (collateralAmountWei === undefined || collateralAmountWei <= 0n) {
+    throw new Error("Missing --collateral-amount/--collateral-amount-wei");
+  }
+
+  const interestBps = interestBpsRaw ? Number(interestBpsRaw) : 0;
+  if (!Number.isInteger(interestBps) || interestBps < 0) throw new Error("Invalid --interest-bps");
+
+  let dueAt: number | undefined = undefined;
+  if (dueAtArg) {
+    const v = Number(dueAtArg);
+    if (!Number.isInteger(v) || v <= 0) throw new Error("Invalid --due-at");
+    dueAt = v;
+  } else if (durationSecondsArg) {
+    const d = Number(durationSecondsArg);
+    if (!Number.isInteger(d) || d <= 0) throw new Error("Invalid --duration-seconds");
+    const now = await chainNowSeconds(publicClient);
+    dueAt = now + d;
+  } else {
+    throw new Error("Missing --duration-seconds or --due-at");
+  }
+
+  const collateralBal = await publicClient.readContract({
+    address: collateralAsset,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [wallet.address],
+  });
+  if (BigInt(collateralBal) < collateralAmountWei) throw new Error("Insufficient collateral balance");
+
+  const poolBal = await publicClient.readContract({
+    address: cfg.debtAsset,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [cfg.securedPool],
+  });
+  if (BigInt(poolBal) < principalWei) throw new Error("Insufficient secured pool liquidity");
+
+  const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
+
+  if (!noAutoApprove) {
+    await ensureAllowance({
+      chain: cfg.chain,
+      rpcUrl: cfg.rpcUrl,
+      publicClient,
+      walletClient,
+      token: collateralAsset,
+      owner: wallet.address,
+      spender: cfg.positionManager,
+      required: collateralAmountWei,
+    });
+  }
+
+  const hash = await walletClient.writeContract({
+    address: cfg.loanManager,
+    abi: loanManagerAbi,
+    functionName: "openLoan",
+    args: [cfg.debtAsset, principalWei, BigInt(interestBps), collateralAsset, collateralAmountWei, BigInt(dueAt)],
+  });
+
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+
+  let opened: { loanId: number; positionId: number } | undefined = undefined;
+	for (const log of receipt.logs ?? []) {
+		if ((log.address ?? "").toLowerCase() !== cfg.loanManager.toLowerCase()) continue;
+		try {
+			const decoded: any = decodeEventLog({ abi: loanManagerAbi as any, data: log.data, topics: log.topics });
+			if (decoded.eventName !== "LoanOpened") continue;
+			const args: any = decoded.args;
+			if ((args?.borrower ?? "").toLowerCase() !== wallet.address.toLowerCase()) continue;
+			opened = { loanId: Number(args.loanId), positionId: Number(args.positionId) };
+			break;
+    } catch {
+      continue;
+    }
+  }
+
+  if (!opened || !Number.isInteger(opened.loanId) || opened.loanId <= 0 || !Number.isInteger(opened.positionId) || opened.positionId <= 0) {
+    throw new Error("Failed to decode LoanOpened event (loan opened but ids not captured)");
+  }
+
+  const existingState: BorrowerState = (await tryLoadState()) ?? {};
+  const tracked = Array.isArray(existingState.trackedSecuredLoanIds)
+    ? existingState.trackedSecuredLoanIds.filter((n) => Number.isInteger(n) && n > 0)
+    : [];
+  if (!tracked.includes(opened.loanId)) tracked.push(opened.loanId);
+
+  const positions = typeof existingState.securedLoanPositions === "object" && existingState.securedLoanPositions
+    ? { ...existingState.securedLoanPositions }
+    : {};
+  positions[String(opened.loanId)] = opened.positionId;
+
+  await updateState({
+    trackedSecuredLoanIds: tracked,
+    securedLoanPositions: positions,
+    lastSecuredLoan: {
+      loanId: opened.loanId,
+      positionId: opened.positionId,
+      borrower: wallet.address,
+      asset: cfg.debtAsset,
+      principalWei: principalWei.toString(),
+      interestBps,
+      collateralAsset,
+      collateralAmountWei: collateralAmountWei.toString(),
+      dueAt,
+    },
+  });
+
+  console.log(
+    JSON.stringify(
+      {
+        txHash: hash,
+        status: receipt.status,
+        loanId: opened.loanId,
+        positionId: opened.positionId,
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function securedStatus() {
+  const loanIdRaw = getArg("--loan-id");
+  if (!loanIdRaw) throw new Error("Missing --loan-id");
+  const loanId = Number(loanIdRaw);
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new Error("Invalid --loan-id");
+
+  const { wallet } = await loadBorrowerAccount();
+  const cfg = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = cfg.publicClient;
+
+  const id = BigInt(loanId);
+  const [loan, outstanding, positionIdOnchain] = await Promise.all([
+    publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "loans", args: [id] }),
+    publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "outstanding", args: [id] }),
+    publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "loanPositions", args: [id] }),
+  ]);
+
+  const state = await tryLoadState();
+  const posFromState = state?.securedLoanPositions?.[String(loanId)];
+  const positionId = Number(positionIdOnchain) > 0 ? Number(positionIdOnchain) : posFromState;
+
+  let position: any = undefined;
+  if (positionId && Number.isInteger(positionId) && positionId > 0) {
+    try {
+      position = await publicClient.readContract({
+        address: cfg.positionManager,
+        abi: positionManagerAbi,
+        functionName: "positions",
+        args: [BigInt(positionId)],
+      });
+    } catch {
+      position = undefined;
+    }
+  }
+
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        data: {
+          borrower: wallet.address,
+          loanId,
+          loan: {
+            borrower: loan[0],
+            asset: loan[1],
+            principalWei: loan[2].toString(),
+            interestBps: Number(loan[3]),
+            collateralAsset: loan[4],
+            collateralAmountWei: loan[5].toString(),
+            openedAt: Number(loan[6]),
+            dueAt: Number(loan[7]),
+            lastAccruedAt: Number(loan[8]),
+            accruedInterestWei: loan[9].toString(),
+            closed: loan[10],
+          },
+          outstandingWei: BigInt(outstanding).toString(),
+          positionId: positionId ?? 0,
+          position: position
+            ? {
+                owner: position[0],
+                collateralAsset: position[1],
+                collateralAmountWei: position[2].toString(),
+                debtAsset: position[3],
+                debtWei: position[4].toString(),
+                liquidated: position[5],
+              }
+            : undefined,
+        },
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function repaySecuredLoan() {
+  const loanIdRaw = getArg("--loan-id");
+  if (!loanIdRaw) throw new Error("Missing --loan-id");
+  const loanId = Number(loanIdRaw);
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new Error("Invalid --loan-id");
+
+  const amountWeiArg = parseWei(getArg("--amount-wei"), "--amount-wei");
+  const amountArg = getArg("--amount");
+  const noAutoApprove = process.argv.includes("--no-auto-approve");
+
+  const { wallet, account } = await loadBorrowerAccount();
+  const cfg = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = cfg.publicClient;
+
+  const id = BigInt(loanId);
+  const [loan, outstanding] = await Promise.all([
+    publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "loans", args: [id] }),
+    publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "outstanding", args: [id] }),
+  ]);
+
+  const asset = loan[1] as string;
+  if (!asset || !ADDRESS_RE.test(asset)) throw new Error("Failed to read loan asset");
+
+  const outstandingWei = BigInt(outstanding);
+  if (outstandingWei === 0n) throw new Error("Nothing to repay");
+
+  const decimals = await readTokenDecimals(publicClient, asset);
+  const repayWei = amountWeiArg ?? (amountArg ? parseUnits(amountArg, decimals) : outstandingWei);
+  if (repayWei <= 0n) throw new Error("Invalid repay amount");
+  if (repayWei > outstandingWei) throw new Error("Repay amount exceeds outstanding");
+
+  const bal = await publicClient.readContract({ address: asset, abi: erc20Abi, functionName: "balanceOf", args: [wallet.address] });
+  if (BigInt(bal) < repayWei) throw new Error("Insufficient balance to repay");
+
+  const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
+
+  if (!noAutoApprove) {
+    await ensureAllowance({
+      chain: cfg.chain,
+      rpcUrl: cfg.rpcUrl,
+      publicClient,
+      walletClient,
+      token: asset,
+      owner: wallet.address,
+      spender: cfg.loanManager,
+      required: repayWei,
+    });
+  }
+
+  const hash = await walletClient.writeContract({
+    address: cfg.loanManager,
+    abi: loanManagerAbi,
+    functionName: "repay",
+    args: [id, repayWei],
+  });
+
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  const newOutstanding = await publicClient.readContract({
+    address: cfg.loanManager,
+    abi: loanManagerAbi,
+    functionName: "outstanding",
+    args: [id],
+  });
+
+  console.log(
+    JSON.stringify(
+      {
+        txHash: hash,
+        status: receipt.status,
+        repaidWei: repayWei.toString(),
+        outstandingWei: outstandingWei.toString(),
+        newOutstandingWei: BigInt(newOutstanding).toString(),
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function withdrawCollateral() {
+  const loanIdRaw = getArg("--loan-id");
+  if (!loanIdRaw) throw new Error("Missing --loan-id");
+  const loanId = Number(loanIdRaw);
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new Error("Invalid --loan-id");
+
+  const positionIdArg = getArg("--position-id");
+  const amountWeiArg = parseWei(getArg("--amount-wei"), "--amount-wei");
+  const amountArg = getArg("--amount");
+
+  const { wallet, account } = await loadBorrowerAccount();
+  const cfg = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = cfg.publicClient;
+
+  let positionId: number | undefined = undefined;
+  if (positionIdArg) {
+    const v = Number(positionIdArg);
+    if (!Number.isInteger(v) || v <= 0) throw new Error("Invalid --position-id");
+    positionId = v;
+  } else {
+    const state = await tryLoadState();
+    const fromState = state?.securedLoanPositions?.[String(loanId)];
+    if (fromState && Number.isInteger(fromState) && fromState > 0) positionId = fromState;
+  }
+
+  if (!positionId) {
+    const id = BigInt(loanId);
+    const onchain = await publicClient.readContract({ address: cfg.loanManager, abi: loanManagerAbi, functionName: "loanPositions", args: [id] });
+    const v = Number(onchain);
+    if (Number.isInteger(v) && v > 0) positionId = v;
+  }
+
+  if (!positionId) throw new Error("Missing position id (pass --position-id or open the loan with this CLI)");
+
+  const position = await publicClient.readContract({
+    address: cfg.positionManager,
+    abi: positionManagerAbi,
+    functionName: "positions",
+    args: [BigInt(positionId)],
+  });
+
+  const owner = position[0] as string;
+  if (owner.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("Position not owned by this wallet");
+  if (position[5]) throw new Error("Position already liquidated");
+  if (BigInt(position[4]) !== 0n) throw new Error("Position still has debt; repay first");
+
+  const collateralAsset = position[1] as string;
+  const collateralAmountWei = BigInt(position[2]);
+
+  const decimals = await readTokenDecimals(publicClient, collateralAsset);
+  const withdrawWei = amountWeiArg ?? (amountArg ? parseUnits(amountArg, decimals) : collateralAmountWei);
+  if (withdrawWei <= 0n) throw new Error("Invalid withdraw amount");
+  if (withdrawWei > collateralAmountWei) throw new Error("Withdraw amount exceeds collateral");
+
+  const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
+  const hash = await walletClient.writeContract({
+    address: cfg.positionManager,
+    abi: positionManagerAbi,
+    functionName: "removeCollateral",
+    args: [BigInt(positionId), withdrawWei],
+  });
+
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  console.log(
+    JSON.stringify(
+      {
+        txHash: hash,
+        status: receipt.status,
+        positionId,
+        collateralAsset,
+        withdrawnWei: withdrawWei.toString(),
+      },
+      null,
+      2
+    )
+  );
+}
+
 async function main() {
   const cmd = process.argv[2];
   if (!cmd || cmd === "-h" || cmd === "--help") {
@@ -902,6 +1681,31 @@ async function main() {
 
   if (cmd === "repay-gas-loan") {
     await repayGasLoan();
+    return;
+  }
+
+  if (cmd === "approve-collateral") {
+    await approveCollateral();
+    return;
+  }
+
+  if (cmd === "open-secured-loan") {
+    await openSecuredLoan();
+    return;
+  }
+
+  if (cmd === "secured-status") {
+    await securedStatus();
+    return;
+  }
+
+  if (cmd === "repay-secured-loan") {
+    await repaySecuredLoan();
+    return;
+  }
+
+  if (cmd === "withdraw-collateral") {
+    await withdrawCollateral();
     return;
   }
 

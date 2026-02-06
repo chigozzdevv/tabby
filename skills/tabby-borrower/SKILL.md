@@ -97,3 +97,26 @@ Optional heartbeat env config:
 - `TABBY_REMIND_REPEAT_SECONDS` (default `21600` = 6h repeat for overdue/default-eligible/low-gas alerts)
 - `TABBY_MIN_REPAY_GAS_WEI` (default `1000000000000000` = 0.001 MON)
 - `AGENT_LOAN_MANAGER_ADDRESS` (optional override if `/public/config` is unreachable)
+
+## Secured loans (direct onchain)
+
+Secured loans are opened directly onchain via `LoanManager` and require:
+
+- the borrower wallet to have MON for gas (or a gas-loan topup),
+- collateral tokens + approval to `PositionManager`,
+- debt token approval to `LoanManager` for repayment.
+
+Example:
+
+```bash
+export MONAD_CHAIN_ID=143
+export MONAD_RPC_URL=https://rpc.monad.xyz
+export LOAN_MANAGER_ADDRESS=0x...
+export COLLATERAL_ASSET=0x...
+
+tabby-borrower approve-collateral --amount 100
+tabby-borrower open-secured-loan --principal 10 --collateral-amount 100 --duration-seconds 3600
+tabby-borrower secured-status --loan-id 1
+tabby-borrower repay-secured-loan --loan-id 1
+tabby-borrower withdraw-collateral --loan-id 1
+```

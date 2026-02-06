@@ -200,7 +200,8 @@ contract DeployTabby {
         if (collateralAsset != address(0) && collateralFeed != address(0)) {
             uint256 maxLtvBps = vm.envOr("COLLATERAL_MAX_LTV_BPS", uint256(8000));
             uint256 liqThresholdBps = vm.envOr("COLLATERAL_LIQ_THRESHOLD_BPS", uint256(8500));
-            uint256 interestRateBps = vm.envOr("COLLATERAL_INTEREST_BPS", uint256(0));
+            // Non-zero by default; set COLLATERAL_INTEREST_BPS=0 only if you explicitly want borrower-provided rates.
+            uint256 interestRateBps = vm.envOr("COLLATERAL_INTEREST_BPS", uint256(200));
             uint256 maxAge = vm.envOr("COLLATERAL_MAX_AGE", uint256(0));
 
             PolicyEngine(policyEngine).setPolicy(
