@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type PoolSnapshot = {
   address: string;
@@ -15,14 +16,6 @@ type PoolsResponse = {
   data: {
     native: PoolSnapshot | null;
     secured: PoolSnapshot | null;
-  };
-};
-
-type PositionResponse = {
-  ok: boolean;
-  data: {
-    shares: string;
-    estimatedAssetsWei: string;
   };
 };
 
@@ -47,12 +40,15 @@ export default function LiquidityProviderModal({
   isOpen: boolean;
   onClose: () => void;
 }) {
-  const apiBase = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL ?? "", []);
+  const router = useRouter();
+  const apiBase = useMemo(
+    () => (process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "http://localhost:3000").replace(/\/$/, ""),
+    []
+  );
   const [poolData, setPoolData] = useState<PoolsResponse["data"] | null>(null);
   const [loadingPools, setLoadingPools] = useState(false);
   const [poolError, setPoolError] = useState<string | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [position, setPosition] = useState<PositionResponse["data"] | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
 
@@ -85,11 +81,9 @@ export default function LiquidityProviderModal({
       const account = accounts?.[0];
       if (!account) throw new Error("No account returned");
       setWalletAddress(account);
-
-      const positionRes = await fetch(`${apiBase}/liquidity/native/position?account=${account}`).then((res) =>
-        res.json()
-      );
-      if (positionRes?.ok) setPosition(positionRes.data);
+      window.localStorage.setItem("tabby.walletAddress", account);
+      onClose();
+      router.push(`/positions?account=${account}`);
     } catch (err) {
       setWalletError(err instanceof Error ? err.message : "Failed to connect wallet");
     } finally {
@@ -169,16 +163,12 @@ export default function LiquidityProviderModal({
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span>Estimated assets</span>
-                      <span className="text-white">{formatWei(position?.estimatedAssetsWei)}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Shares</span>
-                      <span className="text-white">{position?.shares ?? "—"}</span>
+                      <span>Status</span>
+                      <span className="text-white">Redirecting to positions</span>
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-neutral-400">Connect a wallet to view your position.</p>
+                  <p className="mt-3 text-sm text-neutral-400">Connect a wallet to continue to your dashboard.</p>
                 )}
               </div>
             </div>
@@ -190,7 +180,7 @@ export default function LiquidityProviderModal({
                 disabled={connecting}
                 className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {walletAddress ? "Wallet connected" : connecting ? "Connecting..." : "Connect wallet"}
+                {walletAddress ? "Redirecting..." : connecting ? "Connecting..." : "Connect wallet"}
               </button>
               <a
                 href="/agent-quickstart"

@@ -3,7 +3,13 @@
 import { motion } from "framer-motion";
 import { fadeUp } from "./animations";
 
-export default function ContactSection({ onLiquidityProvider }: { onLiquidityProvider: () => void }) {
+export default function ContactSection({
+  onLiquidityProvider,
+  ctaLabel,
+}: {
+  onLiquidityProvider: () => void;
+  ctaLabel: string;
+}) {
   return (
     <section id="contact" className="w-full bg-neutral-950 py-24 text-neutral-100">
       <motion.div
@@ -34,7 +40,7 @@ export default function ContactSection({ onLiquidityProvider }: { onLiquidityPro
               onClick={onLiquidityProvider}
               className="rounded-full bg-white px-6 py-3 text-center text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200"
             >
-              Liquidity Provider
+              {ctaLabel}
             </button>
             <a
               href="/agent-quickstart"

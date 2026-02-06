@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import LandingHeader from "./landing/header";
 import LandingHero from "./landing/hero";
 import HowItWorksSection from "./landing/how-it-works";
@@ -13,18 +14,37 @@ import LandingFooter from "./landing/footer";
 import LiquidityProviderModal from "./landing/liquidity-provider-modal";
 
 export default function Home() {
+  const router = useRouter();
   const [isLiquidityModalOpen, setLiquidityModalOpen] = useState(false);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("tabby.walletAddress");
+    if (stored) setWalletAddress(stored);
+  }, []);
+
+  const handleLiquidityClick = () => {
+    if (walletAddress) {
+      router.push(`/positions?account=${walletAddress}`);
+      return;
+    }
+    setLiquidityModalOpen(true);
+  };
+
+  const ctaLabel = walletAddress ? "View positions" : "Liquidity Provider";
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
       <main>
-        <LandingHero onLiquidityProvider={() => setLiquidityModalOpen(true)} />
+        <LandingHero onLiquidityProvider={handleLiquidityClick} ctaLabel={ctaLabel} />
         <HowItWorksSection />
         <BorrowerSkillSection />
         <PoolsSection />
         <SecuritySection />
         <FaqSection />
-        <ContactSection onLiquidityProvider={() => setLiquidityModalOpen(true)} />
+        <ContactSection onLiquidityProvider={handleLiquidityClick} ctaLabel={ctaLabel} />
       </main>
       <LandingFooter />
       <LiquidityProviderModal isOpen={isLiquidityModalOpen} onClose={() => setLiquidityModalOpen(false)} />

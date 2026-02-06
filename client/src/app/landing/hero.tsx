@@ -3,7 +3,13 @@
 import { motion } from "framer-motion";
 import { fadeUp } from "./animations";
 
-export default function LandingHero({ onLiquidityProvider }: { onLiquidityProvider: () => void }) {
+export default function LandingHero({
+  onLiquidityProvider,
+  ctaLabel,
+}: {
+  onLiquidityProvider: () => void;
+  ctaLabel: string;
+}) {
   return (
     <div className="relative h-[200vh]">
       <section id="about" className="sticky top-0 z-0 overflow-hidden pt-6">
@@ -71,7 +77,7 @@ export default function LandingHero({ onLiquidityProvider }: { onLiquidityProvid
               onClick={onLiquidityProvider}
               className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200"
             >
-              Liquidity Provider
+              {ctaLabel}
             </button>
             <a
               href="/agent-quickstart"

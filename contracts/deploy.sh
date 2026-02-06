@@ -15,5 +15,6 @@ fi
 
 forge script script/DeployTabby.s.sol:DeployTabby \
   --rpc-url "$RPC_URL" \
+  --gas-estimate-multiplier 300 \
   --broadcast \
   --sig "run()"
