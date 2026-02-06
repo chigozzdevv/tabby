@@ -1,15 +1,17 @@
 import "dotenv/config";
-import { createPublicClient, http, type Address } from "viem";
+import { createPublicClient, http, type Abi, type Address } from "viem";
 
-const rpcUrl = process.env.RPC_URL;
+function requiredEnv<T>(value: T | undefined, name: string): T {
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+const rpcUrl = requiredEnv(process.env.RPC_URL, "RPC_URL");
 const chainId = Number(process.env.CHAIN_ID ?? "143");
-const agentLoanManager = process.env.AGENT_LOAN_MANAGER_ADDRESS as Address | undefined;
+const agentLoanManager = requiredEnv(process.env.AGENT_LOAN_MANAGER_ADDRESS as Address | undefined, "AGENT_LOAN_MANAGER_ADDRESS");
 const securedPool = process.env.SECURED_POOL_ADDRESS as Address | undefined;
 const nativeRewards = process.env.TABBY_NATIVE_REWARDS_ADDRESS as Address | undefined;
 const securedRewards = process.env.TABBY_SECURED_REWARDS_ADDRESS as Address | undefined;
-
-if (!rpcUrl) throw new Error("RPC_URL is required");
-if (!agentLoanManager) throw new Error("AGENT_LOAN_MANAGER_ADDRESS is required");
 
 const client = createPublicClient({
   chain: {
@@ -62,7 +64,7 @@ async function fetchEventsInChunks<T extends { args?: Record<string, unknown> }>
   toBlock,
 }: {
   address: Address;
-  abi: any;
+  abi: Abi;
   eventName: string;
   fromBlock: bigint;
   toBlock: bigint;
@@ -79,7 +81,7 @@ async function fetchEventsInChunks<T extends { args?: Record<string, unknown> }>
       fromBlock: start,
       toBlock: end,
     });
-    events.push(...(chunk as T[]));
+    events.push(...(chunk as unknown as T[]));
     start = end + BigInt(1);
   }
   return events;
@@ -89,17 +91,31 @@ function formatBigint(value: bigint) {
   return value.toString();
 }
 
+function toBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  if (typeof value === "string") return BigInt(value);
+  return 0n;
+}
+
+type FeeSharesMintedEvent = {
+  args?: {
+    rewardsShares?: unknown;
+    reserveShares?: unknown;
+  };
+};
+
 async function snapshotPool(label: string, pool: Address, fromBlock: bigint, toBlock: bigint) {
   const rewardsFeeRecipient = await client.readContract({ address: pool, abi: poolAbi, functionName: "rewardsFeeRecipient" });
   const reserveFeeRecipient = await client.readContract({ address: pool, abi: poolAbi, functionName: "reserveFeeRecipient" });
 
-  const feeEvents = await fetchEventsInChunks<any>({ address: pool, abi: poolAbi, eventName: "FeeSharesMinted", fromBlock, toBlock });
+  const feeEvents = await fetchEventsInChunks<FeeSharesMintedEvent>({ address: pool, abi: poolAbi, eventName: "FeeSharesMinted", fromBlock, toBlock });
 
   let rewardsShares = BigInt(0);
   let reserveShares = BigInt(0);
   for (const event of feeEvents) {
-    rewardsShares += BigInt((event.args as any)?.rewardsShares ?? 0);
-    reserveShares += BigInt((event.args as any)?.reserveShares ?? 0);
+    rewardsShares += toBigInt(event.args?.rewardsShares);
+    reserveShares += toBigInt(event.args?.reserveShares);
   }
 
   const rewardsBalance = await client.readContract({ address: pool, abi: poolAbi, functionName: "balanceOf", args: [rewardsFeeRecipient] });
@@ -114,21 +130,30 @@ async function snapshotPool(label: string, pool: Address, fromBlock: bigint, toB
   console.log(`Current reserve recipient balance: ${formatBigint(reserveBalance)}`);
 }
 
+type StakeEvent = {
+  args?: {
+    account?: unknown;
+    shares?: unknown;
+  };
+};
+
 async function snapshotRewards(label: string, rewards: Address, fromBlock: bigint, toBlock: bigint) {
   const totalStaked = await client.readContract({ address: rewards, abi: rewardsAbi, functionName: "totalStakedShares" });
 
-  const stakedEvents = await fetchEventsInChunks<any>({ address: rewards, abi: rewardsAbi, eventName: "Staked", fromBlock, toBlock });
-  const unstakedEvents = await fetchEventsInChunks<any>({ address: rewards, abi: rewardsAbi, eventName: "Unstaked", fromBlock, toBlock });
+  const stakedEvents = await fetchEventsInChunks<StakeEvent>({ address: rewards, abi: rewardsAbi, eventName: "Staked", fromBlock, toBlock });
+  const unstakedEvents = await fetchEventsInChunks<StakeEvent>({ address: rewards, abi: rewardsAbi, eventName: "Unstaked", fromBlock, toBlock });
 
   const balances = new Map<string, bigint>();
   for (const event of stakedEvents) {
-    const account = (event.args as any)?.account as string;
-    const shares = BigInt((event.args as any)?.shares ?? 0);
+    const account = event.args?.account;
+    if (typeof account !== "string") continue;
+    const shares = toBigInt(event.args?.shares);
     balances.set(account, (balances.get(account) ?? BigInt(0)) + shares);
   }
   for (const event of unstakedEvents) {
-    const account = (event.args as any)?.account as string;
-    const shares = BigInt((event.args as any)?.shares ?? 0);
+    const account = event.args?.account;
+    if (typeof account !== "string") continue;
+    const shares = toBigInt(event.args?.shares);
     balances.set(account, (balances.get(account) ?? BigInt(0)) - shares);
   }
 
