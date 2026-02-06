@@ -70,18 +70,18 @@ export default function LandingHero({
             initial="hidden"
             animate="visible"
             transition={{ duration: 0.6, delay: 0.15 }}
-            className="mt-6 flex flex-wrap items-center gap-4"
+            className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4"
           >
             <button
               type="button"
               onClick={onLiquidityProvider}
-              className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200"
+              className="w-full rounded-full bg-white px-6 py-3 text-center text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200 sm:w-auto"
             >
               {ctaLabel}
             </button>
             <a
               href="/agent-quickstart"
-              className="rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50"
+              className="inline-flex w-full items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50 sm:w-auto"
             >
               Agent Quickstart
             </a>

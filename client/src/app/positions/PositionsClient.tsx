@@ -2,8 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createWalletClient, custom, parseEther, parseUnits } from "viem";
-import type { Address } from "viem";
+import {
+  createWalletClient,
+  custom,
+  parseEther,
+  parseUnits,
+  type Address,
+  type EIP1193Provider,
+  type WalletClient,
+} from "viem";
 import LandingHeader from "../landing/header";
 import LandingFooter from "../landing/footer";
 
@@ -115,12 +122,48 @@ const shorten = (address?: string) => {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 };
 
+const toBigIntOrZero = (value?: string) => {
+  if (!value) return BigInt(0);
+  try {
+    return BigInt(value);
+  } catch {
+    return BigInt(0);
+  }
+};
+
+const describeTxError = (err: unknown) => {
+  if (!(err instanceof Error)) return "Transaction failed";
+  if (/user rejected|rejected the request|denied/i.test(err.message)) return "Request rejected in wallet.";
+  if (/does not match the target chain|ChainMismatchError/i.test(err.message)) {
+    return `Wrong network. Switch your wallet to ${CHAIN.name} (chainId ${CHAIN_ID}) and try again.`;
+  }
+  return err.message;
+};
+
+async function ensureTargetChain(walletClient: WalletClient) {
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId === CHAIN_ID) return;
+
+  try {
+    await walletClient.switchChain({ id: CHAIN_ID });
+  } catch {
+    // If chain isn't added, attempt to add then switch.
+    await walletClient.addChain({ chain: CHAIN });
+    await walletClient.switchChain({ id: CHAIN_ID });
+  }
+}
+
 async function getWalletClient() {
   if (typeof window === "undefined" || !("ethereum" in window)) {
     throw new Error("No wallet detected. Install a wallet extension to continue.");
   }
-  const ethereum = (window as any).ethereum;
-  const accounts: string[] = await ethereum.request({ method: "eth_requestAccounts" });
+  const ethereum = (window as unknown as { ethereum?: EIP1193Provider }).ethereum;
+  if (!ethereum) throw new Error("No wallet detected. Install a wallet extension to continue.");
+  const existingAccounts = (await ethereum.request({ method: "eth_accounts" })) as string[];
+  const accounts =
+    existingAccounts?.length > 0
+      ? existingAccounts
+      : ((await ethereum.request({ method: "eth_requestAccounts" })) as string[]);
   const account = accounts?.[0];
   if (!account) throw new Error("No account returned");
   const walletClient = createWalletClient({ account: account as Address, chain: CHAIN, transport: custom(ethereum) });
@@ -131,7 +174,9 @@ export default function PositionsClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [walletChainId, setWalletChainId] = useState<number | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [switchingChain, setSwitchingChain] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
 
   const [poolData, setPoolData] = useState<PoolsResponse["data"] | null>(null);
@@ -143,6 +188,7 @@ export default function PositionsClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [txMessage, setTxMessage] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+  const [pendingTxLabel, setPendingTxLabel] = useState<string | null>(null);
 
   const [nativeDeposit, setNativeDeposit] = useState("");
   const [nativeWithdrawShares, setNativeWithdrawShares] = useState("");
@@ -156,6 +202,9 @@ export default function PositionsClient() {
 
   const accountParam = useMemo(() => searchParams.get("account"), [searchParams]);
 
+  const isWrongChain = walletChainId !== null && walletChainId !== CHAIN_ID;
+  const isBusy = connecting || switchingChain || pendingTxLabel !== null;
+
   useEffect(() => {
     if (accountParam && /^0x[a-fA-F0-9]{40}$/.test(accountParam)) {
       setWalletAddress(accountParam);
@@ -166,6 +215,44 @@ export default function PositionsClient() {
     const stored = window.localStorage.getItem("tabby.walletAddress");
     if (stored) setWalletAddress(stored);
   }, [accountParam]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("ethereum" in window)) return;
+    const ethereum = (window as unknown as { ethereum?: EIP1193Provider }).ethereum;
+    if (!ethereum) return;
+
+    const syncChainId = async () => {
+      try {
+        const hex = (await ethereum.request({ method: "eth_chainId" })) as string;
+        setWalletChainId(Number.parseInt(hex, 16));
+      } catch {
+        // ignore
+      }
+    };
+
+    const handleChainChanged = (chainIdHex: string) => {
+      setWalletChainId(Number.parseInt(chainIdHex, 16));
+      // Clear tx state; likely user is in the middle of fixing a network mismatch.
+      setTxError(null);
+      setTxMessage(null);
+    };
+
+    const handleAccountsChanged = (accounts: Address[]) => {
+      const account = accounts?.[0] ?? null;
+      setWalletAddress(account);
+      if (typeof window === "undefined") return;
+      if (account) window.localStorage.setItem("tabby.walletAddress", account);
+      else window.localStorage.removeItem("tabby.walletAddress");
+    };
+
+    void syncChainId();
+    ethereum.on("chainChanged", handleChainChanged);
+    ethereum.on("accountsChanged", handleAccountsChanged);
+    return () => {
+      ethereum.removeListener("chainChanged", handleChainChanged);
+      ethereum.removeListener("accountsChanged", handleAccountsChanged);
+    };
+  }, []);
 
   useEffect(() => {
     setLoadingPools(true);
@@ -206,8 +293,9 @@ export default function PositionsClient() {
     }
     try {
       setConnecting(true);
-      const ethereum = (window as any).ethereum;
-      const accounts: string[] = await ethereum.request({ method: "eth_requestAccounts" });
+      const ethereum = (window as unknown as { ethereum?: EIP1193Provider }).ethereum;
+      if (!ethereum) throw new Error("No wallet detected. Install a wallet extension to continue.");
+      const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
       const account = accounts?.[0];
       if (!account) throw new Error("No account returned");
       setWalletAddress(account);
@@ -220,15 +308,65 @@ export default function PositionsClient() {
     }
   };
 
+  const refreshPositions = async (account: string) => {
+    setLoadingPositions(true);
+    setLoadError(null);
+    try {
+      const [nativeRes, securedRes, rewardsRes] = await Promise.all([
+        fetch(`${API_BASE}/liquidity/native/position?account=${account}`).then((res) => res.json()),
+        fetch(`${API_BASE}/liquidity/secured/position?account=${account}`)
+          .then((res) => res.json())
+          .catch(() => null),
+        fetch(`${API_BASE}/liquidity/rewards?account=${account}`).then((res) => res.json()),
+      ]);
+      setPositionNative(nativeRes?.ok ? nativeRes.data : null);
+      setPositionSecured(securedRes?.ok ? securedRes.data : null);
+      setRewards(rewardsRes?.ok ? rewardsRes.data : null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Failed to load positions");
+    } finally {
+      setLoadingPositions(false);
+    }
+  };
+
+  const switchToTargetChain = async () => {
+    setWalletError(null);
+    setTxError(null);
+    setTxMessage(null);
+    if (typeof window === "undefined" || !("ethereum" in window)) {
+      setWalletError("No wallet detected. Install a wallet extension to continue.");
+      return;
+    }
+
+    const ethereum = (window as unknown as { ethereum?: EIP1193Provider }).ethereum;
+    if (!ethereum) {
+      setWalletError("No wallet detected. Install a wallet extension to continue.");
+      return;
+    }
+
+    try {
+      setSwitchingChain(true);
+      const walletClient = createWalletClient({ chain: CHAIN, transport: custom(ethereum) });
+      await ensureTargetChain(walletClient);
+    } catch (err) {
+      setWalletError(describeTxError(err));
+    } finally {
+      setSwitchingChain(false);
+    }
+  };
+
   const runTx = async (label: string, action: () => Promise<`0x${string}`>) => {
     setTxError(null);
-    setTxMessage(`${label} submitted...`);
+    setTxMessage(`${label}: waiting for wallet...`);
+    setPendingTxLabel(label);
     try {
       const hash = await action();
-      setTxMessage(`${label} tx ${hash}`);
+      setTxMessage(`${label} submitted: ${hash}`);
     } catch (err) {
       setTxMessage(null);
-      setTxError(err instanceof Error ? err.message : `${label} failed`);
+      setTxError(describeTxError(err));
+    } finally {
+      setPendingTxLabel(null);
     }
   };
 
@@ -239,6 +377,7 @@ export default function PositionsClient() {
     if (!amount) return;
     await runTx("Native deposit", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: nativePool.address as Address,
         abi: nativePoolAbi,
@@ -248,6 +387,7 @@ export default function PositionsClient() {
       });
       setWalletAddress(account);
       window.localStorage.setItem("tabby.walletAddress", account);
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -259,6 +399,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Native withdraw", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: nativePool.address as Address,
         abi: nativePoolAbi,
@@ -266,6 +407,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -277,6 +419,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Stake native shares", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
@@ -284,6 +427,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -295,6 +439,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Unstake native shares", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
@@ -302,6 +447,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -311,12 +457,14 @@ export default function PositionsClient() {
     if (!rewardsAddress) return;
     await runTx("Claim native rewards", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
         functionName: "claim",
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -328,6 +476,7 @@ export default function PositionsClient() {
     if (!amount) return;
     await runTx("Secured deposit", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const amountWei = parseUnits(amount, 18);
       await walletClient.writeContract({
         address: securedPool.asset as Address,
@@ -345,6 +494,7 @@ export default function PositionsClient() {
       });
       setWalletAddress(account);
       window.localStorage.setItem("tabby.walletAddress", account);
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -356,6 +506,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Secured withdraw", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: securedPool.address as Address,
         abi: securedPoolAbi,
@@ -363,6 +514,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -374,6 +526,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Stake secured shares", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
@@ -381,6 +534,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -392,6 +546,7 @@ export default function PositionsClient() {
     if (!sharesInput) return;
     await runTx("Unstake secured shares", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
@@ -399,6 +554,7 @@ export default function PositionsClient() {
         args: [parseUnits(sharesInput, 18)],
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -408,12 +564,14 @@ export default function PositionsClient() {
     if (!rewardsAddress) return;
     await runTx("Claim secured rewards", async () => {
       const { walletClient, account } = await getWalletClient();
+      await ensureTargetChain(walletClient);
       const hash = await walletClient.writeContract({
         address: rewardsAddress as Address,
         abi: rewardsAbi,
         functionName: "claim",
         account,
       });
+      void refreshPositions(account);
       return hash;
     });
   };
@@ -424,27 +582,45 @@ export default function PositionsClient() {
     poolData?.secured?.totalAssetsWei
   );
 
+  const nativeShares = toBigIntOrZero(positionNative?.shares);
+  const securedShares = toBigIntOrZero(positionSecured?.shares);
+  const nativeStakedShares = toBigIntOrZero(rewards?.native?.stakedShares);
+  const securedStakedShares = toBigIntOrZero(rewards?.secured?.stakedShares);
+  const nativeEarned = toBigIntOrZero(rewards?.native?.earned);
+  const securedEarned = toBigIntOrZero(rewards?.secured?.earned);
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
       <main className="mx-auto w-full max-w-[1440px] px-6 pb-20 pt-14">
         <div className="rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8">
           <p className="text-xs uppercase tracking-[0.3em] text-neutral-400">Liquidity positions</p>
-          <h1 className="mt-3 text-3xl font-semibold text-white">Your liquidity dashboard</h1>
-          <p className="mt-3 max-w-2xl text-sm text-neutral-400">
-            Connect your wallet to view live pool stats, position exposure, and rewards.
-          </p>
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={connectWallet}
-              disabled={connecting}
+              disabled={connecting || switchingChain}
               className="rounded-full bg-white px-6 py-3 text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-70"
             >
               {walletAddress ? "Wallet connected" : connecting ? "Connecting..." : "Connect wallet"}
             </button>
+            {walletAddress && isWrongChain ? (
+              <button
+                type="button"
+                onClick={switchToTargetChain}
+                disabled={switchingChain}
+                className="rounded-full border border-amber-400/50 bg-amber-500/10 px-6 py-3 text-sm font-semibold text-amber-200 transition hover:border-amber-300 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {switchingChain ? "Switching..." : `Switch to ${CHAIN.name}`}
+              </button>
+            ) : null}
             {walletAddress ? (
               <span className="text-xs text-neutral-400">Connected: {shorten(walletAddress)}</span>
+            ) : null}
+            {walletAddress && isWrongChain ? (
+              <span className="text-xs text-amber-300">
+                Wrong network (chain {walletChainId}). Expected {CHAIN_ID}.
+              </span>
             ) : null}
             {walletError ? <span className="text-xs text-red-400">{walletError}</span> : null}
             {txMessage ? <span className="text-xs text-emerald-300">{txMessage}</span> : null}
@@ -585,79 +761,91 @@ export default function PositionsClient() {
                     <button
                       type="button"
                       onClick={handleNativeDeposit}
-                      className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200"
+                      disabled={isBusy || isWrongChain}
+                      className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Deposit
+                      {pendingTxLabel === "Native deposit" ? "Processing..." : "Deposit"}
                     </button>
                   </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
-                    <input
-                      value={nativeWithdrawShares}
-                      onChange={(event) => setNativeWithdrawShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleNativeWithdraw}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50"
-                    >
-                      Withdraw
-                    </button>
-                  </div>
+                  {nativeShares > BigInt(0) ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
+                      <input
+                        value={nativeWithdrawShares}
+                        onChange={(event) => setNativeWithdrawShares(event.target.value)}
+                        placeholder="Shares"
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleNativeWithdraw}
+                        disabled={isBusy || isWrongChain}
+                        className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {pendingTxLabel === "Native withdraw" ? "Processing..." : "Withdraw"}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
-                <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
-                    <input
-                      value={nativeStakeShares}
-                      onChange={(event) => setNativeStakeShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleNativeStake}
-                      disabled={!rewards?.native?.address}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Stake
-                    </button>
+                {rewards?.native?.address && (nativeShares > BigInt(0) || nativeStakedShares > BigInt(0) || nativeEarned > BigInt(0)) ? (
+                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                    {nativeShares > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
+                        <input
+                          value={nativeStakeShares}
+                          onChange={(event) => setNativeStakeShares(event.target.value)}
+                          placeholder="Shares"
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleNativeStake}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Stake native shares" ? "Processing..." : "Stake"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {nativeStakedShares > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
+                        <input
+                          value={nativeUnstakeShares}
+                          onChange={(event) => setNativeUnstakeShares(event.target.value)}
+                          placeholder="Shares"
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleNativeUnstake}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Unstake native shares" ? "Processing..." : "Unstake"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {nativeEarned > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
+                        <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
+                          {formatWei(rewards?.native?.earned, "TABBY")}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleNativeClaim}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Claim native rewards" ? "Processing..." : "Claim"}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
-                    <input
-                      value={nativeUnstakeShares}
-                      onChange={(event) => setNativeUnstakeShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleNativeUnstake}
-                      disabled={!rewards?.native?.address}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Unstake
-                    </button>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
-                    <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
-                      {formatWei(rewards?.native?.earned, "TABBY")}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleNativeClaim}
-                      disabled={!rewards?.native?.address}
-                      className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Claim
-                    </button>
-                  </div>
-                </div>
+                ) : null}
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
@@ -703,80 +891,91 @@ export default function PositionsClient() {
                     <button
                       type="button"
                       onClick={handleSecuredDeposit}
-                      disabled={!poolData?.secured?.asset}
+                      disabled={!poolData?.secured?.asset || isBusy || isWrongChain}
                       className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Approve + Deposit
+                      {pendingTxLabel === "Secured deposit" ? "Processing..." : "Approve + Deposit"}
                     </button>
                   </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
-                    <input
-                      value={securedWithdrawShares}
-                      onChange={(event) => setSecuredWithdrawShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSecuredWithdraw}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50"
-                    >
-                      Withdraw
-                    </button>
-                  </div>
+                  {securedShares > BigInt(0) ? (
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
+                      <input
+                        value={securedWithdrawShares}
+                        onChange={(event) => setSecuredWithdrawShares(event.target.value)}
+                        placeholder="Shares"
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSecuredWithdraw}
+                        disabled={isBusy || isWrongChain}
+                        className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {pendingTxLabel === "Secured withdraw" ? "Processing..." : "Withdraw"}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
-                <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
-                    <input
-                      value={securedStakeShares}
-                      onChange={(event) => setSecuredStakeShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSecuredStake}
-                      disabled={!rewards?.secured?.address}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Stake
-                    </button>
+                {rewards?.secured?.address && (securedShares > BigInt(0) || securedStakedShares > BigInt(0) || securedEarned > BigInt(0)) ? (
+                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                    {securedShares > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
+                        <input
+                          value={securedStakeShares}
+                          onChange={(event) => setSecuredStakeShares(event.target.value)}
+                          placeholder="Shares"
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSecuredStake}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Stake secured shares" ? "Processing..." : "Stake"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {securedStakedShares > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
+                        <input
+                          value={securedUnstakeShares}
+                          onChange={(event) => setSecuredUnstakeShares(event.target.value)}
+                          placeholder="Shares"
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSecuredUnstake}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Unstake secured shares" ? "Processing..." : "Unstake"}
+                        </button>
+                      </div>
+                    ) : null}
+                    {securedEarned > BigInt(0) ? (
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
+                        <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
+                          {formatWei(rewards?.secured?.earned, "TABBY")}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleSecuredClaim}
+                          disabled={isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {pendingTxLabel === "Claim secured rewards" ? "Processing..." : "Claim"}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
-                    <input
-                      value={securedUnstakeShares}
-                      onChange={(event) => setSecuredUnstakeShares(event.target.value)}
-                      placeholder="Shares"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSecuredUnstake}
-                      disabled={!rewards?.secured?.address}
-                      className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Unstake
-                    </button>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
-                    <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
-                      {formatWei(rewards?.secured?.earned, "TABBY")}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleSecuredClaim}
-                      disabled={!rewards?.secured?.address}
-                      className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Claim
-                    </button>
-                  </div>
-                </div>
+                ) : null}
               </div>
             </div>
           ) : (

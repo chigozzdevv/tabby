@@ -4,6 +4,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
+type Eip1193Provider = {
+  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
+};
+
 type PoolSnapshot = {
   address: string;
   totalAssetsWei: string;
@@ -76,8 +80,9 @@ export default function LiquidityProviderModal({
     }
     try {
       setConnecting(true);
-      const ethereum = (window as any).ethereum;
-      const accounts: string[] = await ethereum.request({ method: "eth_requestAccounts" });
+      const ethereum = (window as unknown as { ethereum?: Eip1193Provider }).ethereum;
+      if (!ethereum) throw new Error("No wallet detected. Install a wallet extension to continue.");
+      const accounts = (await ethereum.request({ method: "eth_requestAccounts" })) as string[];
       const account = accounts?.[0];
       if (!account) throw new Error("No account returned");
       setWalletAddress(account);

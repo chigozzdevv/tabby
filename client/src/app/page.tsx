@@ -21,7 +21,7 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const stored = window.localStorage.getItem("tabby.walletAddress");
-    if (stored) setWalletAddress(stored);
+    setWalletAddress(stored);
   }, []);
 
   const handleLiquidityClick = () => {
