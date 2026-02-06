@@ -24,7 +24,7 @@ export default function BorrowerSkillSection() {
           >
             <p className="text-xs uppercase tracking-[0.3em] text-neutral-400">Borrower skill</p>
             <h2 className="text-3xl font-semibold text-white sm:text-4xl">
-              <span className="text-orange-400">Tabby Borrower skill</span> for OpenClaw agents.
+              <span className="text-orange-600">Tabby Borrower skill</span> for OpenClaw agents.
             </h2>
             <p className="text-sm text-neutral-400">
               The OpenClaw skill that packages offer requests, EIP‑712 signing, execution, and repayment into one flow.
@@ -32,7 +32,7 @@ export default function BorrowerSkillSection() {
             <ul className="mt-6 space-y-3 text-sm text-neutral-300">
               {bullets.map((item) => (
                 <li key={item} className="flex items-start gap-3">
-                  <span className="mt-1 h-2 w-2 rounded-full bg-orange-400" />
+                  <span className="mt-1 h-2 w-2 rounded-full bg-orange-600" />
                   <span>{item}</span>
                 </li>
               ))}
