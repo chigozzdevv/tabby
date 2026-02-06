@@ -17,6 +17,9 @@ const envSchema = z.object({
   AGENT_LOAN_MANAGER_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   SECURED_POOL_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
   TABBY_PRIVATE_KEY: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
+  TABBY_TOKEN: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+  TABBY_NATIVE_REWARDS_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+  TABBY_SECURED_REWARDS_ADDRESS: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
 
   MOLTBOOK_BASE_URL: z
     .string()

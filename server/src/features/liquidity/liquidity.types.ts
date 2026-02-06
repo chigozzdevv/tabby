@@ -17,6 +17,23 @@ export type PoolPosition = {
   estimatedAssetsWei: string;
 };
 
+export type RewardsSnapshot = {
+  address: `0x${string}`;
+  pool: `0x${string}`;
+  rewardToken: `0x${string}`;
+  totalStakedShares: string;
+  rewardPerShareStored: string;
+  pendingRewards: string;
+  account?: `0x${string}`;
+  stakedShares?: string;
+  earned?: string;
+};
+
+export type RewardsResponse = {
+  native: RewardsSnapshot | null;
+  secured: RewardsSnapshot | null;
+};
+
 export type DepositQuote = {
   amountWei: string;
   shares: string;

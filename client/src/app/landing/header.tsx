@@ -34,6 +34,12 @@ export default function LandingHeader() {
           />
         </Link>
         <div className="flex items-center gap-3 text-xs text-neutral-300">
+          <Link
+            href="/dashboard"
+            className="rounded-full border border-white/10 px-4 py-1.5 text-[11px] uppercase tracking-[0.2em] text-neutral-200 transition hover:border-white/50"
+          >
+            Dashboard
+          </Link>
           <span className="uppercase tracking-[0.2em] text-neutral-400">$Tabby</span>
           <a
             href={tokenExplorerUrl}

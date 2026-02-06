@@ -5,6 +5,7 @@ import {
   getNativeLpPosition,
   getNativeWithdrawQuote,
   getPools,
+  getRewards,
   getSecuredDepositQuote,
   getSecuredLpPosition,
   getSecuredWithdrawQuote,
@@ -12,6 +13,7 @@ import {
 
 export function registerLiquidityRoutes(app: FastifyInstance) {
   app.get("/liquidity/pools", getPools);
+  app.get("/liquidity/rewards", getRewards);
   app.get("/liquidity/native/position", getNativeLpPosition);
   app.get("/liquidity/native/quote/deposit", getNativeDepositQuote);
   app.get("/liquidity/native/quote/withdraw", getNativeWithdrawQuote);

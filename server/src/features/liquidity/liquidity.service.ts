@@ -1,6 +1,14 @@
 import { env } from "@/config/env.js";
 import { asAddress, publicClient } from "@/shared/viem.js";
-import type { DepositQuote, PoolPosition, PoolSnapshot, SecuredPoolSnapshot, WithdrawQuote } from "@/features/liquidity/liquidity.types.js";
+import type {
+  DepositQuote,
+  PoolPosition,
+  PoolSnapshot,
+  RewardsResponse,
+  RewardsSnapshot,
+  SecuredPoolSnapshot,
+  WithdrawQuote,
+} from "@/features/liquidity/liquidity.types.js";
 
 const agentLoanManagerAbi = [
   {
@@ -75,6 +83,58 @@ const liquidityPoolAbi = [
   {
     type: "function",
     name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+const poolShareRewardsAbi = [
+  {
+    type: "function",
+    name: "pool",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "rewardToken",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "totalStakedShares",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "rewardPerShareStored",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "pendingRewards",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "stakedShares",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "earned",
     stateMutability: "view",
     inputs: [{ name: "account", type: "address" }],
     outputs: [{ type: "uint256" }],
@@ -212,4 +272,50 @@ export async function quoteSecuredWithdraw(shares: bigint): Promise<WithdrawQuot
 
   const amountWei = totalShares === 0n ? 0n : (shares * totalAssets) / totalShares;
   return { shares: shares.toString(), amountWei: amountWei.toString() };
+}
+
+async function buildRewardsSnapshot(rewardsAddress: string, account?: `0x${string}`): Promise<RewardsSnapshot> {
+  const rewards = asAddress(rewardsAddress);
+  const [pool, rewardToken, totalStakedShares, rewardPerShareStored, pendingRewards] = await Promise.all([
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "pool" }),
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "rewardToken" }),
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "totalStakedShares" }),
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "rewardPerShareStored" }),
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "pendingRewards" }),
+  ]);
+
+  const snapshot: RewardsSnapshot = {
+    address: rewards,
+    pool,
+    rewardToken,
+    totalStakedShares: totalStakedShares.toString(),
+    rewardPerShareStored: rewardPerShareStored.toString(),
+    pendingRewards: pendingRewards.toString(),
+  };
+
+  if (!account) return snapshot;
+
+  const [stakedShares, earned] = await Promise.all([
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "stakedShares", args: [account] }),
+    publicClient.readContract({ address: rewards, abi: poolShareRewardsAbi, functionName: "earned", args: [account] }),
+  ]);
+
+  return {
+    ...snapshot,
+    account,
+    stakedShares: stakedShares.toString(),
+    earned: earned.toString(),
+  };
+}
+
+export async function getRewardsSnapshots(account?: `0x${string}`): Promise<RewardsResponse> {
+  const nativePromise = env.TABBY_NATIVE_REWARDS_ADDRESS
+    ? buildRewardsSnapshot(env.TABBY_NATIVE_REWARDS_ADDRESS, account)
+    : Promise.resolve(null);
+  const securedPromise = env.TABBY_SECURED_REWARDS_ADDRESS
+    ? buildRewardsSnapshot(env.TABBY_SECURED_REWARDS_ADDRESS, account)
+    : Promise.resolve(null);
+
+  const [native, secured] = await Promise.all([nativePromise, securedPromise]);
+  return { native, secured };
 }

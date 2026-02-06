@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   getNativePoolSnapshot,
   getNativePosition,
+  getRewardsSnapshots,
   getSecuredPoolSnapshot,
   getSecuredPosition,
   quoteNativeDeposit,
@@ -15,6 +16,16 @@ export async function getPools(_request: FastifyRequest, reply: FastifyReply) {
   const native = await getNativePoolSnapshot();
   const secured = await getSecuredPoolSnapshot();
   return reply.send({ ok: true, data: { native, secured } });
+}
+
+const rewardsQuerySchema = z.object({
+  account: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+});
+
+export async function getRewards(request: FastifyRequest, reply: FastifyReply) {
+  const { account } = rewardsQuerySchema.parse(request.query);
+  const data = await getRewardsSnapshots(account as `0x${string}` | undefined);
+  return reply.send({ ok: true, data });
 }
 
 const positionQuerySchema = z.object({
