@@ -88,6 +88,12 @@ export default function LandingHero({
             >
               Agent Quickstart
             </a>
+            <a
+              href="/agent"
+              className="inline-flex w-full items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50 sm:w-auto"
+            >
+              Live Agent
+            </a>
           </motion.div>
         </div>
       </section>
