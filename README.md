@@ -322,15 +322,11 @@ node dist/bin/tabby-borrower.js ensure-gas
 
 Or try any secured-loan command (`open-secured-loan`, `repay-secured-loan`, etc). By default, those commands auto-top up gas first if the wallet is below `TABBY_MIN_TX_GAS_WEI`.
 
-### 7) Live dashboard (UI)
+### 7) Demo UI (hero terminal)
 
-Your web client includes a live activity page:
-
-- `https://<your-client-domain>/agent?borrower=0x...`
-
-It polls:
+The landing page includes an "Agent terminal" card that polls:
 
 - `GET /public/activity?borrower=...`
 - `GET /public/monitoring/gas-loans/next-due?borrower=...`
 
-For demos, have the agent include the dashboard link (with `borrower=`) in its Telegram messages so you never paste addresses manually.
+For demos, open the site with `/?borrower=0x...` (or set `NEXT_PUBLIC_DEMO_BORROWER`) so the terminal shows your agent wallet without manual copy/paste.

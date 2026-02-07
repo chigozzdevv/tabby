@@ -1,7 +1,179 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { fadeUp } from "./animations";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash";
+const DEMO_BORROWER = process.env.NEXT_PUBLIC_DEMO_BORROWER;
+
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const STORAGE_KEY = "tabby.demo.borrower";
+
+type PublicGasLoanNextDue = {
+  loanId: number;
+  dueAt: number;
+  dueInSeconds: number;
+  outstandingWei: string;
+};
+
+type ActivityEvent = {
+  type: string;
+  loanId?: number;
+  txHash?: `0x${string}`;
+  createdAt: string;
+};
+
+function shortHex(value: string) {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function formatDuration(seconds: number) {
+  const abs = Math.abs(seconds);
+  const sign = seconds < 0 ? "-" : "";
+  if (abs < 60) return `${sign}${abs}s`;
+  if (abs < 3600) return `${sign}${Math.floor(abs / 60)}m`;
+  if (abs < 86400) return `${sign}${Math.floor(abs / 3600)}h`;
+  return `${sign}${Math.floor(abs / 86400)}d`;
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "no-store" });
+  const json = (await res.json()) as any;
+  if (!res.ok) {
+    const msg = typeof json?.message === "string" ? json.message : `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  if (!json?.ok) throw new Error("Bad response");
+  return json.data as T;
+}
+
+function AgentTerminalCard() {
+  const [borrower, setBorrower] = useState<string | undefined>(undefined);
+  const [nextDue, setNextDue] = useState<PublicGasLoanNextDue | null | undefined>(undefined);
+  const [events, setEvents] = useState<ActivityEvent[] | undefined>(undefined);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = (params.get("borrower") ?? "").trim();
+    if (ADDRESS_RE.test(fromQuery)) {
+      window.localStorage.setItem(STORAGE_KEY, fromQuery);
+      setBorrower(fromQuery);
+      return;
+    }
+
+    const fromStorage = window.localStorage.getItem(STORAGE_KEY) ?? "";
+    if (ADDRESS_RE.test(fromStorage)) {
+      setBorrower(fromStorage);
+      return;
+    }
+
+    if (DEMO_BORROWER && ADDRESS_RE.test(DEMO_BORROWER)) {
+      setBorrower(DEMO_BORROWER);
+      return;
+    }
+  }, []);
+
+  const urls = useMemo(() => {
+    if (!borrower) return null;
+    const base = API_BASE_URL.replace(/\/$/, "");
+    return {
+      nextDueUrl: `${base}/public/monitoring/gas-loans/next-due?borrower=${encodeURIComponent(borrower)}`,
+      eventsUrl: `${base}/public/activity?borrower=${encodeURIComponent(borrower)}&limit=8`,
+    };
+  }, [borrower]);
+
+  useEffect(() => {
+    if (!urls) return;
+    const { nextDueUrl, eventsUrl } = urls;
+    let cancelled = false;
+
+    async function load() {
+      try {
+        setError(undefined);
+        const [next, evts] = await Promise.all([
+          fetchJson<PublicGasLoanNextDue | null>(nextDueUrl),
+          fetchJson<ActivityEvent[]>(eventsUrl),
+        ]);
+        if (cancelled) return;
+        setNextDue(next);
+        setEvents(Array.isArray(evts) ? evts : []);
+        setLastUpdatedAt(Date.now());
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    load();
+    const interval = window.setInterval(load, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [urls]);
+
+  const statusDotClass = error
+    ? "bg-red-400"
+    : borrower && (nextDue !== undefined || events !== undefined)
+      ? "bg-emerald-400"
+      : "bg-neutral-500";
+
+  const lines: string[] = [];
+  lines.push("$ tabby agent status");
+  lines.push(`api: ${API_BASE_URL}`);
+  lines.push(`borrower: ${borrower ? shortHex(borrower) : "<not-set>"}`);
+  if (error) lines.push(`error: ${error}`);
+  if (!error) {
+    if (borrower && nextDue === undefined) lines.push("gas-loan: loading...");
+    if (borrower && nextDue === null) lines.push("gas-loan: none");
+    if (borrower && nextDue) {
+      const due = nextDue.dueInSeconds >= 0 ? `in ${formatDuration(nextDue.dueInSeconds)}` : `overdue ${formatDuration(nextDue.dueInSeconds)}`;
+      lines.push(`gas-loan: #${nextDue.loanId} due ${due}`);
+    }
+    if (events && events.length > 0) {
+      lines.push("");
+      lines.push("recent:");
+      for (const e of events.slice(0, 6)) {
+        const ts = new Date(e.createdAt).toLocaleTimeString();
+        const loan = typeof e.loanId === "number" ? ` loan#${e.loanId}` : "";
+        const tx = e.txHash ? ` tx=${shortHex(e.txHash)}` : "";
+        lines.push(`- [${ts}] ${e.type}${loan}${tx}`);
+      }
+    }
+  }
+
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className={`h-2 w-2 rounded-full ${statusDotClass}`} />
+          <span className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-300">Agent terminal</span>
+        </div>
+        <span className="text-[11px] text-neutral-500">
+          {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Idle"}
+        </span>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/60">
+        <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-neutral-200">
+          {lines.join("\n")}
+        </pre>
+      </div>
+
+      {!borrower ? (
+        <p className="mt-3 text-xs text-neutral-400">
+          Tip: set <span className="font-mono">NEXT_PUBLIC_DEMO_BORROWER</span> or open <span className="font-mono">/?borrower=0x...</span>.
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 export default function LandingHero({
   onLiquidityProvider,
@@ -44,56 +216,62 @@ export default function LandingHero({
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_65%,rgba(255,255,255,0.22)_0px,rgba(255,255,255,0.16)_140px,rgba(255,255,255,0)_280px)]" />
         </div>
         <div className="absolute inset-x-0 bottom-0 h-[60vh] bg-gradient-to-b from-neutral-950/85 via-neutral-950/45 to-transparent backdrop-blur-[2px]" />
-        <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1440px] flex-col justify-start px-6 pb-28 pt-10">
-          <motion.h1
-            variants={fadeUp}
-            initial="hidden"
-            animate="visible"
-            transition={{ duration: 0.7, delay: 0.05 }}
-            className="mt-12 max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-6xl"
-          >
-            Liquidity rail for
-            <span className="block">
-              <span className="text-orange-600">OpenClaw</span> agents
-            </span>
-          </motion.h1>
-          <motion.p
-            variants={fadeUp}
-            initial="hidden"
-            animate="visible"
-            transition={{ duration: 0.7, delay: 0.1 }}
-            className="mt-5 max-w-2xl text-lg text-neutral-300"
-          >
-            Provide instant, policy-gated MON liquidity to agents for on-chain actions—let agents borrow, spend, and
-            repay with interest.
-          </motion.p>
+        <div className="relative z-10 mx-auto grid min-h-screen w-full max-w-[1440px] items-start gap-10 px-6 pb-28 pt-10 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="min-w-0">
+            <motion.h1
+              variants={fadeUp}
+              initial="hidden"
+              animate="visible"
+              transition={{ duration: 0.7, delay: 0.05 }}
+              className="mt-12 max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-6xl"
+            >
+              Liquidity rail for
+              <span className="block">
+                <span className="text-orange-600">OpenClaw</span> agents
+              </span>
+            </motion.h1>
+            <motion.p
+              variants={fadeUp}
+              initial="hidden"
+              animate="visible"
+              transition={{ duration: 0.7, delay: 0.1 }}
+              className="mt-5 max-w-2xl text-lg text-neutral-300"
+            >
+              Provide instant, policy-gated MON liquidity to agents for on-chain actions—let agents borrow, spend, and
+              repay with interest.
+            </motion.p>
+
+            <motion.div
+              variants={fadeUp}
+              initial="hidden"
+              animate="visible"
+              transition={{ duration: 0.6, delay: 0.15 }}
+              className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4"
+            >
+              <button
+                type="button"
+                onClick={onLiquidityProvider}
+                className="w-full rounded-full bg-white px-6 py-3 text-center text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200 sm:w-auto"
+              >
+                {ctaLabel}
+              </button>
+              <a
+                href="/agent-quickstart"
+                className="inline-flex w-full items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50 sm:w-auto"
+              >
+                Agent Quickstart
+              </a>
+            </motion.div>
+          </div>
 
           <motion.div
             variants={fadeUp}
             initial="hidden"
             animate="visible"
-            transition={{ duration: 0.6, delay: 0.15 }}
-            className="mt-6 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4"
+            transition={{ duration: 0.7, delay: 0.2 }}
+            className="lg:mt-24"
           >
-            <button
-              type="button"
-              onClick={onLiquidityProvider}
-              className="w-full rounded-full bg-white px-6 py-3 text-center text-sm font-semibold text-neutral-900 transition hover:bg-neutral-200 sm:w-auto"
-            >
-              {ctaLabel}
-            </button>
-            <a
-              href="/agent-quickstart"
-              className="inline-flex w-full items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50 sm:w-auto"
-            >
-              Agent Quickstart
-            </a>
-            <a
-              href="/agent"
-              className="inline-flex w-full items-center justify-center rounded-full border border-white/20 px-6 py-3 text-sm font-medium text-white transition hover:border-white/50 sm:w-auto"
-            >
-              Live Agent
-            </a>
+            <AgentTerminalCard />
           </motion.div>
         </div>
       </section>
