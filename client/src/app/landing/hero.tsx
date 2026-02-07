@@ -6,6 +6,7 @@ import { fadeUp } from "./animations";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash";
 const MONADSCAN_TX_BASE_URL = "https://monadscan.com/tx/";
+const MONADSCAN_ADDRESS_BASE_URL = "https://monadscan.com/address/";
 
 type ActivityEvent = {
   agentId?: string;
@@ -84,7 +85,7 @@ function AgentTerminalCard() {
   }
 
   const lines: Array<{ key: string; node: React.ReactNode }> = [];
-  lines.push({ key: "header", node: "$ tabby skill feed" });
+  lines.push({ key: "header", node: "$ tabby agent feed" });
   if (events === undefined && !error) lines.push({ key: "connecting", node: "connecting..." });
   if (error) lines.push({ key: "error", node: `error: ${error}` });
   if (events !== undefined && !error) {
@@ -97,7 +98,21 @@ function AgentTerminalCard() {
       lines.push({ key: "recent", node: "recent:" });
       for (const e of events.slice(0, 8)) {
         const ts = new Date(e.createdAt).toLocaleTimeString();
-        const who = e.borrower ? ` borrower=${shortHex(e.borrower)}` : e.agentId ? ` agent=${e.agentId}` : "";
+        const whoNode = e.borrower ? (
+          <>
+            {" borrower="}
+            <a
+              href={`${MONADSCAN_ADDRESS_BASE_URL}${e.borrower}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-emerald-200/20 underline-offset-4 hover:decoration-emerald-200"
+            >
+              {shortHex(e.borrower)}
+            </a>
+          </>
+        ) : e.agentId ? (
+          <>{" agent="}{e.agentId}</>
+        ) : null;
         const loan = typeof e.loanId === "number" ? ` loan#${e.loanId}` : "";
         const key = `evt:${e.createdAt}:${e.type}:${e.loanId ?? "0"}:${e.txHash ?? "0"}`;
         const txNode = e.txHash ? (
@@ -119,7 +134,7 @@ function AgentTerminalCard() {
           node: (
             <>
               - [{ts}] {e.type}
-              {who}
+              {whoNode}
               {loan}
               {txNode}
             </>

@@ -1394,15 +1394,18 @@ async function repayGasLoan() {
     },
   ];
 
-  const hash = await walletClient.writeContract({
-    address: agentLoanManager,
-    abi,
-    functionName: "repay",
-    args: [BigInt(loanId)],
-    value: BigInt(repayWei),
-  });
+  const { hash, receipt } = await withAutoGas(wallet.address, async () => {
+    const hash = await walletClient.writeContract({
+      address: agentLoanManager,
+      abi,
+      functionName: "repay",
+      args: [BigInt(loanId)],
+      value: BigInt(repayWei),
+    });
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return { hash, receipt };
+  });
   console.log(
     JSON.stringify(
       {
