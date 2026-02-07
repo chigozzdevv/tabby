@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { fadeUp } from "./animations";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash";
+const MONADSCAN_TX_BASE_URL = "https://monadscan.com/tx/";
 
 type ActivityEvent = {
   agentId?: string;
@@ -82,24 +83,48 @@ function AgentTerminalCard() {
     if (e.agentId) agentsSeen.add(e.agentId);
   }
 
-  const lines: string[] = [];
-  lines.push("$ tabby skill feed");
-  if (events === undefined && !error) lines.push("connecting...");
-  if (error) lines.push(`error: ${error}`);
+  const lines: Array<{ key: string; node: React.ReactNode }> = [];
+  lines.push({ key: "header", node: "$ tabby skill feed" });
+  if (events === undefined && !error) lines.push({ key: "connecting", node: "connecting..." });
+  if (error) lines.push({ key: "error", node: `error: ${error}` });
   if (events !== undefined && !error) {
-    lines.push(`agents_seen=${agentsSeen.size} borrowers_seen=${borrowersSeen.size}`);
-    lines.push("");
+    lines.push({ key: "seen", node: `agents_seen=${agentsSeen.size} borrowers_seen=${borrowersSeen.size}` });
+    lines.push({ key: "blank:1", node: "" });
 
     if (events.length === 0) {
-      lines.push("waiting for activity...");
+      lines.push({ key: "waiting", node: "waiting for activity..." });
     } else {
-      lines.push("recent:");
+      lines.push({ key: "recent", node: "recent:" });
       for (const e of events.slice(0, 8)) {
         const ts = new Date(e.createdAt).toLocaleTimeString();
         const who = e.borrower ? ` borrower=${shortHex(e.borrower)}` : e.agentId ? ` agent=${e.agentId}` : "";
         const loan = typeof e.loanId === "number" ? ` loan#${e.loanId}` : "";
-        const tx = e.txHash ? ` tx=${shortHex(e.txHash)}` : "";
-        lines.push(`- [${ts}] ${e.type}${who}${loan}${tx}`);
+        const key = `evt:${e.createdAt}:${e.type}:${e.loanId ?? "0"}:${e.txHash ?? "0"}`;
+        const txNode = e.txHash ? (
+          <>
+            {" tx="}
+            <a
+              href={`${MONADSCAN_TX_BASE_URL}${e.txHash}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-emerald-200/30 underline-offset-4 hover:decoration-emerald-200"
+            >
+              {shortHex(e.txHash)}
+            </a>
+          </>
+        ) : null;
+
+        lines.push({
+          key,
+          node: (
+            <>
+              - [{ts}] {e.type}
+              {who}
+              {loan}
+              {txNode}
+            </>
+          ),
+        });
       }
     }
   }
@@ -123,7 +148,12 @@ function AgentTerminalCard() {
         </div>
 
         <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-emerald-50/90">
-          {lines.join("\n")}
+          {lines.map((line, idx) => (
+            <Fragment key={line.key}>
+              {line.node}
+              {idx === lines.length - 1 ? null : "\n"}
+            </Fragment>
+          ))}
         </pre>
       </div>
     </div>
