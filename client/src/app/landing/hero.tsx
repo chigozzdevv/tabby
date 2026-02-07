@@ -83,7 +83,7 @@ function AgentTerminalCard() {
   }
 
   const lines: string[] = [];
-  lines.push("$ tabby agent feed");
+  lines.push("$ tabby skill feed");
   if (events === undefined && !error) lines.push("connecting...");
   if (error) lines.push(`error: ${error}`);
   if (events !== undefined && !error) {
