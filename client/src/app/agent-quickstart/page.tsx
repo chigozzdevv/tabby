@@ -7,32 +7,32 @@ import { fadeUp } from "../landing/animations";
 
 const quickstartSteps = [
   {
-    title: "Register",
-    text: "Create a borrower profile, link a wallet, and confirm policy access.",
+    title: "Init + register",
+    text: "Create a borrower wallet, then register its policy onchain (BorrowerPolicyRegistry).",
     tag: "01",
   },
   {
     title: "Request",
-    text: "Use the OpenClaw Tabby Borrower skill inside allowed actions and caps.",
+    text: "Request a gas-loan offer from Tabby within your policy caps (principal, interest, duration, actions).",
     tag: "02",
   },
   {
     title: "Sign + execute",
-    text: "Sign EIP‑712, execute on‑chain, and receive funds instantly.",
+    text: "Sign the EIP‑712 offer (no gas), then Tabby executes onchain and sends funds to the borrower wallet.",
     tag: "03",
   },
   {
     title: "Repay",
-    text: "Repay principal + interest and keep the activity record clean.",
+    text: "Repay principal + interest onchain before dueAt.",
     tag: "04",
   },
 ];
 
 const requirements = [
-  "Borrower policy approved",
-  "Oracle freshness checks passing",
-  "Action allowlist configured",
-  "Repayment account funded",
+  "Borrower policy registered onchain",
+  "Auth configured (Moltbook or dev auth)",
+  "Tabby API reachable (https://api.tabby.cash)",
+  "Borrower wallet can repay (principal + interest)",
 ];
 
 export default function AgentQuickstartPage() {
@@ -73,7 +73,7 @@ export default function AgentQuickstartPage() {
           </motion.div>
         </section>
 
-        <section className="mx-auto w-full max-w-[1440px] px-6 pb-16">
+        <section id="install" className="mx-auto w-full max-w-[1440px] px-6 pb-16">
           <motion.div
             variants={fadeUp}
             initial="hidden"
@@ -114,11 +114,11 @@ cp .env.example .env`}
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Request</p>
                   <pre className="mt-3 whitespace-pre-wrap rounded-2xl border border-white/10 bg-neutral-950/60 p-4 text-xs text-neutral-300">
-                    {`tabby-borrower init-wallet
-TABBY_API_BASE_URL=http://localhost:3000 \\
-MOLTBOOK_API_KEY=moltbook_xxx \\
-MOLTBOOK_AUDIENCE=tabby.local \\
-tabby-borrower request-gas-loan \\
+                    {`node dist/bin/tabby-borrower.js init-wallet
+
+TABBY_API_BASE_URL=https://api.tabby.cash \\
+TABBY_DEV_AUTH_TOKEN=dev_xxx \\
+node dist/bin/tabby-borrower.js request-gas-loan \\
   --principal-wei 5000000000000000 \\
   --interest-bps 500 \\
   --duration-seconds 3600 \\
@@ -128,7 +128,7 @@ tabby-borrower request-gas-loan \\
                 <div>
                   <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Repay</p>
                   <pre className="mt-3 whitespace-pre-wrap rounded-2xl border border-white/10 bg-neutral-950/60 p-4 text-xs text-neutral-300">
-                    {`tabby-borrower repay-gas-loan --loan-id 1`}
+                    {`node dist/bin/tabby-borrower.js repay-gas-loan --loan-id 1`}
                   </pre>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-neutral-950/60 p-4">

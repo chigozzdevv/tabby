@@ -238,3 +238,86 @@ Common deploy env vars:
 - Configure borrower policy in `BorrowerPolicyRegistry`
 - Configure collateral policy and feeds in `PolicyEngine` and `ChainlinkPriceOracle`
 - Fund rewards by calling `PoolShareRewards.notifyRewardAmount(amount)`
+
+## OpenClaw VPS setup
+
+You can run OpenClaw anywhere you can keep a process alive (laptop, home server, VPS). For a public demo, a small Ubuntu LTS VPS works well.
+
+### 1) Server config
+
+If you want to test without Moltbook, set:
+
+- `ENFORCE_MOLTBOOK=false`
+- `DEV_AUTH_TOKEN=<random secret>`
+
+This enables gas-loan endpoints to accept `X-Dev-Auth: <DEV_AUTH_TOKEN>` instead of `X-Moltbook-Identity`.
+
+### 2) VPS: install OpenClaw + Telegram
+
+On the VPS (Ubuntu LTS), install OpenClaw and run onboarding:
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash
+openclaw onboard --install-daemon
+```
+
+Pick:
+
+- Model provider
+- Telegram channel and paste your bot token
+
+### 3) VPS: install Tabby borrower skill
+
+Clone this repo on the VPS and build the skill:
+
+```bash
+git clone https://github.com/chigozzdevv/tabby
+cd tabby/skills/tabby-borrower
+npm install
+npm run build
+```
+
+### 4) VPS: tell OpenClaw to load the skill
+
+Edit `~/.openclaw/openclaw.json` to include:
+
+```json5
+{
+  "skills": {
+    "load": { "extraDirs": ["/ABS/PATH/TO/tabby/skills"] },
+    "entries": {
+      "tabby-borrower": {
+        "enabled": true,
+        "env": {
+          "TABBY_API_BASE_URL": "https://api.tabby.cash",
+          "TABBY_DEV_AUTH_TOKEN": "<DEV_AUTH_TOKEN>",
+          "MONAD_CHAIN_ID": "143",
+          "MONAD_RPC_URL": "https://rpc.monad.xyz"
+        }
+      }
+    }
+  }
+}
+```
+
+### 5) Borrower wallet + onchain policy
+
+On the VPS, create the borrower wallet:
+
+```bash
+cd /ABS/PATH/TO/tabby/skills/tabby-borrower
+node dist/bin/tabby-borrower.js init-wallet
+```
+
+This writes `~/.config/tabby-borrower/wallet.json`. Register that wallet address in `BorrowerPolicyRegistry` onchain (one-time), otherwise `/loans/gas/offer` will return `policy-not-set`.
+
+### 6) Demo: autonomous gas topups
+
+From Telegram (or OpenClaw TUI), run:
+
+```bash
+cd /ABS/PATH/TO/tabby/skills/tabby-borrower
+node dist/bin/tabby-borrower.js ensure-gas
+```
+
+Or try any secured-loan command (`open-secured-loan`, `repay-secured-loan`, etc). By default, those commands auto-top up gas first if the wallet is below `TABBY_MIN_TX_GAS_WEI`.
