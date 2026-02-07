@@ -106,22 +106,22 @@ function AgentTerminalCard() {
 
   return (
     <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/80" />
+      <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#080b10]">
+        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/80" />
+            </div>
+            <span className={`h-2 w-2 rounded-full ${statusDotClass}`} />
           </div>
-          <span className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-300">Agent feed</span>
-          <span className={`h-2 w-2 rounded-full ${statusDotClass}`} />
-        </div>
-        <span className="text-[11px] text-neutral-500">
-          {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Connecting"}
-        </span>
-      </div>
 
-      <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-[#080b10]">
+          <span className="text-[11px] text-emerald-50/50">
+            {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Connecting"}
+          </span>
+        </div>
+
         <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-emerald-50/90">
           {lines.join("\n")}
         </pre>
