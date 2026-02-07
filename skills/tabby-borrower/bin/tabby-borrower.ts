@@ -84,12 +84,21 @@ function parseDotEnv(content) {
 }
 
 async function loadLocalEnv() {
-  const envPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env");
-  try {
-    const raw = await fs.readFile(envPath, "utf8");
-    parseDotEnv(raw);
-  } catch {
-    return;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+
+  const candidates = [
+    path.join(here, "..", ".env"),
+    path.join(here, "..", "..", ".env"),
+  ];
+
+  for (const envPath of candidates) {
+    try {
+      const raw = await fs.readFile(envPath, "utf8");
+      parseDotEnv(raw);
+      return;
+    } catch {
+      continue;
+    }
   }
 }
 

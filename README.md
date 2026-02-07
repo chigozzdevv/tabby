@@ -111,14 +111,45 @@ Other components such as policy and oracle configuration remain governance sensi
 
 ## Deployed addresses
 
-Fill these after deployment:
+Monad Mainnet (chainId `143`):
 
-- `TABBY_TOKEN`
-- `AGENT_LOAN_MANAGER`
-- `NATIVE_LIQUIDITY_POOL`
-- `SECURED_LIQUIDITY_POOL`
-- `POOL_SHARE_REWARDS_NATIVE`
-- `POOL_SHARE_REWARDS_SECURED`
+- RPC: `https://rpc.monad.xyz`
+- Public API: `https://api.tabby.cash`
+
+Token:
+
+- `$TABBY` (`TABBY_TOKEN`): `0x93A7006bD345a7dFfF35910Da2DB97bA4Cb67777` ([nad.fun](https://nad.fun/tokens/0x93A7006bD345a7dFfF35910Da2DB97bA4Cb67777))
+
+Core protocol:
+
+| Component | Address |
+| --- | --- |
+| `WalletRegistry` | `0xC68924076331F54fDadA830CC5E3906C1D8Ba150` |
+| `BorrowerPolicyRegistry` | `0x4ceB3C20e74Fae13eb3D2B58A349294832824E50` |
+| `NativeLiquidityPool` (MON pool) | `0x345684fA5d58EC318A410eB6BC60623F92A3578f` |
+| `AgentLoanManager` (gas loans) | `0x34eE5B23D8447518adCC3fdEBF1348E3794ff79f` |
+| `PoolShareRewards` (native pool) | `0xE24EA1f075bA2BEd7197677C4AabBA079C992C8d` |
+| `LiquidityPool` (secured / WMON pool) | `0xC289D5f03d0D2F57e1FE334b00288b7469D6DABe` |
+| `PoolShareRewards` (secured pool) | `0x06921a98FE502e882FfA4a4618DCeD6e3Ac36F3C` |
+| `PolicyEngine` | `0x602f296af2E5fEfc966100e30eE23f52D2ac0e29` |
+| `ChainlinkPriceOracle` | `0x096e23478Cb6be028C5688834614A6C585B7caef` |
+| `PositionManager` | `0xEB438D243A604DbBcD1324417E76Dbc0Fd2CF401` |
+| `LoanManager` | `0xE6304a71Ec6f4BE1600C84BE0c027F8Fe7A921d0` |
+| `RiskEngine` | `0xC207d8E9B50706956461bf50D24E1D5BC74fDCE4` |
+| `LiquidationEngine` | `0xC53949dE6122D5819Dee90D6477De5ee2537794e` |
+
+Oracles and collateral configuration:
+
+- WMON: `0x3bd359C1119dA7Da1D913D1C4D2B7c461115433A`
+- `WMON_FEED`: `0xBcD78f76005B7515837af6b50c7C52BCf73822fb`
+- `COLLATERAL_ASSET`: `0x754704Bc059F8C67012fEd69BC8A327a5aafb603`
+- `COLLATERAL_FEED`: `0xf5F15f188AbCB0d165D1Edb7f37F7d6fA2fCebec`
+- Collateral policy: `maxLtvBps=8000`, `liquidationThresholdBps=8500`, `maxAge=3600`
+
+Interest rate controller (optional):
+
+- `UtilizationRateController`: `0xe0D2b58D2E128e0084621eBFd78ca29E6B8105BB`
+- Example params (currently set): `base=500`, `kinkUtil=8000`, `slope1=1000`, `slope2=3000`, `min=200`, `max=8000`
 
 ## Requirements
 
@@ -149,11 +180,12 @@ npm run dev
 ```bash
 cd skills/tabby-borrower
 npm install
+npm run build
 cp .env.example .env
 
-tabby-borrower init-wallet
-tabby-borrower request-gas-loan --principal-wei 5000000000000000 --interest-bps 500 --duration-seconds 3600 --action 1
-tabby-borrower repay-gas-loan --loan-id 1
+node dist/bin/tabby-borrower.js init-wallet
+node dist/bin/tabby-borrower.js request-gas-loan --principal-wei 5000000000000000 --interest-bps 500 --duration-seconds 3600 --action 1
+node dist/bin/tabby-borrower.js repay-gas-loan --loan-id 1
 ```
 
 See `skills/tabby-borrower/SKILL.md` for full workflow.
@@ -175,7 +207,7 @@ Dry run:
 ```bash
 cd contracts
 PRIVATE_KEY=... TABBY_SIGNER=0x... forge script script/DeployTabby.s.sol:DeployTabby \
-  --fork-url https://rpc.monad.xyz --sig "run()" -vvv
+  --rpc-url https://rpc.monad.xyz --sig "run()" -vvv
 ```
 
 Broadcast:
@@ -206,4 +238,3 @@ Common deploy env vars:
 - Configure borrower policy in `BorrowerPolicyRegistry`
 - Configure collateral policy and feeds in `PolicyEngine` and `ChainlinkPriceOracle`
 - Fund rewards by calling `PoolShareRewards.notifyRewardAmount(amount)`
-
