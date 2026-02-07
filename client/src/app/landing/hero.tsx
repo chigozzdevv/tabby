@@ -5,19 +5,10 @@ import { motion } from "framer-motion";
 import { fadeUp } from "./animations";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash";
-const DEMO_BORROWER = process.env.NEXT_PUBLIC_DEMO_BORROWER;
-
-const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
-const STORAGE_KEY = "tabby.demo.borrower";
-
-type PublicGasLoanNextDue = {
-  loanId: number;
-  dueAt: number;
-  dueInSeconds: number;
-  outstandingWei: string;
-};
 
 type ActivityEvent = {
+  agentId?: string;
+  borrower?: `0x${string}`;
   type: string;
   loanId?: number;
   txHash?: `0x${string}`;
@@ -27,15 +18,6 @@ type ActivityEvent = {
 function shortHex(value: string) {
   if (value.length <= 12) return value;
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
-
-function formatDuration(seconds: number) {
-  const abs = Math.abs(seconds);
-  const sign = seconds < 0 ? "-" : "";
-  if (abs < 60) return `${sign}${abs}s`;
-  if (abs < 3600) return `${sign}${Math.floor(abs / 60)}m`;
-  if (abs < 86400) return `${sign}${Math.floor(abs / 3600)}h`;
-  return `${sign}${Math.floor(abs / 86400)}d`;
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -50,58 +32,27 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 function AgentTerminalCard() {
-  const [borrower, setBorrower] = useState<string | undefined>(undefined);
-  const [nextDue, setNextDue] = useState<PublicGasLoanNextDue | null | undefined>(undefined);
   const [events, setEvents] = useState<ActivityEvent[] | undefined>(undefined);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const params = new URLSearchParams(window.location.search);
-    const fromQuery = (params.get("borrower") ?? "").trim();
-    if (ADDRESS_RE.test(fromQuery)) {
-      window.localStorage.setItem(STORAGE_KEY, fromQuery);
-      setBorrower(fromQuery);
-      return;
-    }
-
-    const fromStorage = window.localStorage.getItem(STORAGE_KEY) ?? "";
-    if (ADDRESS_RE.test(fromStorage)) {
-      setBorrower(fromStorage);
-      return;
-    }
-
-    if (DEMO_BORROWER && ADDRESS_RE.test(DEMO_BORROWER)) {
-      setBorrower(DEMO_BORROWER);
-      return;
-    }
-  }, []);
-
   const urls = useMemo(() => {
-    if (!borrower) return null;
     const base = API_BASE_URL.replace(/\/$/, "");
     return {
-      nextDueUrl: `${base}/public/monitoring/gas-loans/next-due?borrower=${encodeURIComponent(borrower)}`,
-      eventsUrl: `${base}/public/activity?borrower=${encodeURIComponent(borrower)}&limit=8`,
+      eventsUrl: `${base}/public/activity?limit=12`,
     };
-  }, [borrower]);
+  }, []);
 
   useEffect(() => {
     if (!urls) return;
-    const { nextDueUrl, eventsUrl } = urls;
+    const { eventsUrl } = urls;
     let cancelled = false;
 
     async function load() {
       try {
         setError(undefined);
-        const [next, evts] = await Promise.all([
-          fetchJson<PublicGasLoanNextDue | null>(nextDueUrl),
-          fetchJson<ActivityEvent[]>(eventsUrl),
-        ]);
+        const evts = await fetchJson<ActivityEvent[]>(eventsUrl);
         if (cancelled) return;
-        setNextDue(next);
         setEvents(Array.isArray(evts) ? evts : []);
         setLastUpdatedAt(Date.now());
       } catch (e) {
@@ -120,30 +71,35 @@ function AgentTerminalCard() {
 
   const statusDotClass = error
     ? "bg-red-400"
-    : borrower && (nextDue !== undefined || events !== undefined)
-      ? "bg-emerald-400"
+    : events !== undefined
+      ? "bg-emerald-300"
       : "bg-neutral-500";
 
+  const borrowersSeen = new Set<string>();
+  const agentsSeen = new Set<string>();
+  for (const e of events ?? []) {
+    if (e.borrower) borrowersSeen.add(e.borrower.toLowerCase());
+    if (e.agentId) agentsSeen.add(e.agentId);
+  }
+
   const lines: string[] = [];
-  lines.push("$ tabby agent status");
-  lines.push(`api: ${API_BASE_URL}`);
-  lines.push(`borrower: ${borrower ? shortHex(borrower) : "<not-set>"}`);
+  lines.push("$ tabby agent feed");
+  if (events === undefined && !error) lines.push("connecting...");
   if (error) lines.push(`error: ${error}`);
-  if (!error) {
-    if (borrower && nextDue === undefined) lines.push("gas-loan: loading...");
-    if (borrower && nextDue === null) lines.push("gas-loan: none");
-    if (borrower && nextDue) {
-      const due = nextDue.dueInSeconds >= 0 ? `in ${formatDuration(nextDue.dueInSeconds)}` : `overdue ${formatDuration(nextDue.dueInSeconds)}`;
-      lines.push(`gas-loan: #${nextDue.loanId} due ${due}`);
-    }
-    if (events && events.length > 0) {
-      lines.push("");
+  if (events !== undefined && !error) {
+    lines.push(`agents_seen=${agentsSeen.size} borrowers_seen=${borrowersSeen.size}`);
+    lines.push("");
+
+    if (events.length === 0) {
+      lines.push("waiting for activity...");
+    } else {
       lines.push("recent:");
-      for (const e of events.slice(0, 6)) {
+      for (const e of events.slice(0, 8)) {
         const ts = new Date(e.createdAt).toLocaleTimeString();
+        const who = e.borrower ? ` borrower=${shortHex(e.borrower)}` : e.agentId ? ` agent=${e.agentId}` : "";
         const loan = typeof e.loanId === "number" ? ` loan#${e.loanId}` : "";
         const tx = e.txHash ? ` tx=${shortHex(e.txHash)}` : "";
-        lines.push(`- [${ts}] ${e.type}${loan}${tx}`);
+        lines.push(`- [${ts}] ${e.type}${who}${loan}${tx}`);
       }
     }
   }
@@ -151,26 +107,25 @@ function AgentTerminalCard() {
   return (
     <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-sm">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/80" />
+          </div>
+          <span className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-300">Agent feed</span>
           <span className={`h-2 w-2 rounded-full ${statusDotClass}`} />
-          <span className="text-xs font-semibold uppercase tracking-[0.3em] text-neutral-300">Agent terminal</span>
         </div>
         <span className="text-[11px] text-neutral-500">
-          {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Idle"}
+          {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : "Connecting"}
         </span>
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-neutral-950/60">
-        <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-neutral-200">
+      <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-[#080b10]">
+        <pre className="max-h-[340px] overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-emerald-50/90">
           {lines.join("\n")}
         </pre>
       </div>
-
-      {!borrower ? (
-        <p className="mt-3 text-xs text-neutral-400">
-          Tip: set <span className="font-mono">NEXT_PUBLIC_DEMO_BORROWER</span> or open <span className="font-mono">/?borrower=0x...</span>.
-        </p>
-      ) : null}
     </div>
   );
 }

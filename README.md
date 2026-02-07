@@ -326,7 +326,6 @@ Or try any secured-loan command (`open-secured-loan`, `repay-secured-loan`, etc)
 
 The landing page includes an "Agent terminal" card that polls:
 
-- `GET /public/activity?borrower=...`
-- `GET /public/monitoring/gas-loans/next-due?borrower=...`
+- `GET /public/activity`
 
-For demos, open the site with `/?borrower=0x...` (or set `NEXT_PUBLIC_DEMO_BORROWER`) so the terminal shows your agent wallet without manual copy/paste.
+It shows global activity (across agents) for demos.

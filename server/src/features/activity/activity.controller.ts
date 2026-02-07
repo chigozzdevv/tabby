@@ -20,24 +20,22 @@ const authQuerySchema = z.object({
   before: z.coerce.date().optional(),
 });
 
-const publicQuerySchema = z
-  .object({
-    borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
-    loanId: z.coerce.number().int().positive().optional(),
-    type: z
-      .enum([
-        "gas-loan.offer-created",
-        "gas-loan.offer-expired",
-        "gas-loan.offer-canceled",
-        "gas-loan.executed",
-        "gas-loan.repaid",
-        "gas-loan.defaulted",
-      ])
-      .optional(),
-    limit: z.coerce.number().int().min(1).max(200).default(50),
-    before: z.coerce.date().optional(),
-  })
-  .refine((v) => v.borrower || v.loanId, { message: "borrower or loanId is required" });
+const publicQuerySchema = z.object({
+  borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+  loanId: z.coerce.number().int().positive().optional(),
+  type: z
+    .enum([
+      "gas-loan.offer-created",
+      "gas-loan.offer-expired",
+      "gas-loan.offer-canceled",
+      "gas-loan.executed",
+      "gas-loan.repaid",
+      "gas-loan.defaulted",
+    ])
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  before: z.coerce.date().optional(),
+});
 
 export async function getActivity(request: FastifyRequest, reply: FastifyReply) {
   const auth = (request as unknown as { auth: AuthContext }).auth;
@@ -47,7 +45,7 @@ export async function getActivity(request: FastifyRequest, reply: FastifyReply) 
 }
 
 export async function getPublicActivity(request: FastifyRequest, reply: FastifyReply) {
-  const parsed = publicQuerySchema.parse(request.query);
-  const data = await listActivityEvents(parsed);
+  const query = publicQuerySchema.parse(request.query);
+  const data = await listActivityEvents(query);
   return reply.send({ ok: true, data });
 }
