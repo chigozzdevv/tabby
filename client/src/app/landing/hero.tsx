@@ -85,7 +85,7 @@ function AgentTerminalCard() {
   }
 
   const lines: Array<{ key: string; node: React.ReactNode }> = [];
-  lines.push({ key: "header", node: "$ tabby agent feed" });
+  lines.push({ key: "header", node: "$ tabby skill feed" });
   if (events === undefined && !error) lines.push({ key: "connecting", node: "connecting..." });
   if (error) lines.push({ key: "error", node: `error: ${error}` });
   if (events !== undefined && !error) {
