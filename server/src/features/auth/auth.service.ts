@@ -24,6 +24,11 @@ function pruneCache(nowMs: number) {
 }
 
 export async function verifyMoltbookIdentityToken(identityToken: string): Promise<MoltbookVerifyResponse> {
+  const appKey = env.MOLTBOOK_APP_KEY;
+  if (!appKey) {
+    throw new HttpError(500, "moltbook-app-key-misconfigured", "MOLTBOOK_APP_KEY is missing");
+  }
+
   const nowMs = Date.now();
   pruneCache(nowMs);
 
@@ -44,7 +49,7 @@ export async function verifyMoltbookIdentityToken(identityToken: string): Promis
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-moltbook-app-key": env.MOLTBOOK_APP_KEY,
+        "x-moltbook-app-key": appKey,
       },
       body: JSON.stringify(body),
     });

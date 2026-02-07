@@ -104,7 +104,8 @@ function usage() {
       "tabby-borrower <command>",
       "",
       "Commands:",
-      "  init-wallet",
+      "  init-wallet [--force]",
+      "  ensure-gas [--min-balance-wei <wei>] [--topup-wei <wei>] [--interest-bps <bps>] [--duration-seconds <sec>] [--action <n>] [--json]",
       "  request-gas-loan --principal-wei <wei> --interest-bps <bps> --duration-seconds <sec> --action <n> [--borrower <0x...>] [--metadata-hash <0x...>]",
       "  status --loan-id <id>",
       "  repay-gas-loan --loan-id <id> [--amount-wei <wei>]",
@@ -116,10 +117,19 @@ function usage() {
       "  repay-secured-loan --loan-id <id> [--amount <n>|--amount-wei <wei>] [--no-auto-approve]",
       "  withdraw-collateral --loan-id <id> [--position-id <id>] [--amount <n>|--amount-wei <wei>]",
       "",
+      "Global flags:",
+      "  --no-auto-gas   Disable automatic gas topups before sending transactions.",
+      "",
       "Env:",
-      "  TABBY_API_BASE_URL   (default: http://localhost:3000)",
+      "  TABBY_API_BASE_URL   (default: https://api.tabby.cash)",
+      "  TABBY_DEV_AUTH_TOKEN (optional; used when server ENFORCE_MOLTBOOK=false + DEV_AUTH_TOKEN is set)",
       "  MOLTBOOK_API_KEY     (required to auto-mint identity token)",
       "  MOLTBOOK_AUDIENCE    (optional)",
+      "  TABBY_MIN_TX_GAS_WEI         (optional; default: 10000000000000000 = 0.01 MON)",
+      "  TABBY_GAS_TOPUP_WEI          (optional; default: 20000000000000000 = 0.02 MON)",
+      "  TABBY_GAS_TOPUP_INTEREST_BPS (optional; default: 500)",
+      "  TABBY_GAS_TOPUP_DURATION_SECONDS (optional; default: 3600)",
+      "  TABBY_GAS_TOPUP_ACTION       (optional; default: 1)",
       "  MONAD_CHAIN_ID / CHAIN_ID   (optional; defaults to 10143 unless returned by Tabby or cached)",
       "  MONAD_RPC_URL / RPC_URL     (optional; defaults to https://testnet-rpc.monad.xyz or https://rpc.monad.xyz)",
       "  AGENT_LOAN_MANAGER_ADDRESS         (optional; overrides cached/public config)",
@@ -163,6 +173,12 @@ function baseUrl() {
     throw new Error("TABBY_API_BASE_URL must use https for non-local hosts");
   }
   return value;
+}
+
+function isLocalBaseUrl() {
+  const url = new URL(ENV.TABBY_API_BASE_URL);
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }
 
 async function statePath() {
@@ -268,7 +284,8 @@ async function saveWallet(privateKey) {
 }
 
 async function mintIdentityToken() {
-  const apiKey = requireEnv("MOLTBOOK_API_KEY");
+  const apiKey = ENV.MOLTBOOK_API_KEY;
+  if (!apiKey) return undefined;
   const audience = ENV.MOLTBOOK_AUDIENCE;
 
   const res = await fetch("https://www.moltbook.com/api/v1/agents/me/identity-token", {
@@ -860,50 +877,65 @@ async function heartbeat() {
   }
 }
 
-async function requestGasLoan() {
-  const principalWei = getArg("--principal-wei");
-  const interestBps = getArg("--interest-bps");
-  const durationSeconds = getArg("--duration-seconds");
-  const action = getArg("--action");
-  const borrowerOverride = getArg("--borrower");
-  const metadataHash = getArg("--metadata-hash");
+type GasLoanOfferParams = {
+  borrower: string;
+  principalWei: string;
+  interestBps: number;
+  durationSeconds: number;
+  action: number;
+  metadataHash?: string;
+};
 
-  const inputSchema = z.object({
-    principalWei: z.string().regex(/^\d+$/),
-    interestBps: z.coerce.number().int().min(0),
-    durationSeconds: z.coerce.number().int().positive(),
-    action: z.coerce.number().int().min(0).max(255),
-    borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-    metadataHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/).optional(),
-  });
+async function readJsonSafe(res: Response): Promise<any | undefined> {
+  try {
+    return await res.json();
+  } catch {
+    return undefined;
+  }
+}
 
+function httpFailureMessage(prefix: string, status: number, json: any | undefined) {
+  const code = json?.code;
+  const msg = json?.message;
+  if (typeof code === "string" && code.length > 0) {
+    return `${prefix} (${status}) ${code}${typeof msg === "string" && msg.length > 0 ? `: ${msg}` : ""}`;
+  }
+  return `${prefix} (${status})`;
+}
+
+async function requestGasLoanWithParams(params: GasLoanOfferParams) {
   const wallet = await loadWallet();
-  const borrower = borrowerOverride ?? wallet.address;
-  const parsed = inputSchema.parse({
-    principalWei,
-    interestBps,
-    durationSeconds,
-    action,
-    borrower,
-    metadataHash,
-  });
+  if (params.borrower.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("Borrower must match ~/.config/tabby-borrower/wallet.json address");
+  }
 
   const identityToken = await mintIdentityToken();
+  const devAuthToken = ENV.TABBY_DEV_AUTH_TOKEN;
+  if (!identityToken && !devAuthToken && !isLocalBaseUrl()) {
+    throw new Error("Missing auth: set MOLTBOOK_API_KEY (Moltbook) or TABBY_DEV_AUTH_TOKEN (dev)");
+  }
 
   const offerRes = await fetch(new URL("/loans/gas/offer", baseUrl()), {
     method: "POST",
-    headers: { "content-type": "application/json", "x-moltbook-identity": identityToken },
+    headers: {
+      "content-type": "application/json",
+      ...(identityToken ? { "x-moltbook-identity": identityToken } : {}),
+      ...(devAuthToken ? { "x-dev-auth": devAuthToken } : {}),
+    },
     body: JSON.stringify({
-      borrower: parsed.borrower,
-      principalWei: parsed.principalWei,
-      interestBps: parsed.interestBps,
-      durationSeconds: parsed.durationSeconds,
-      action: parsed.action,
-      metadataHash: parsed.metadataHash,
+      borrower: params.borrower,
+      principalWei: params.principalWei,
+      interestBps: params.interestBps,
+      durationSeconds: params.durationSeconds,
+      action: params.action,
+      metadataHash: params.metadataHash,
     }),
   });
-  if (!offerRes.ok) throw new Error(`tabby offer failed (${offerRes.status})`);
-  const offerJson = await offerRes.json();
+
+  const offerJson = await readJsonSafe(offerRes);
+  if (!offerRes.ok) {
+    throw new Error(httpFailureMessage("tabby offer failed", offerRes.status, offerJson));
+  }
   if (!offerJson?.ok) throw new Error(`tabby offer error: ${JSON.stringify(offerJson)}`);
 
   const data = offerJson.data;
@@ -948,15 +980,22 @@ async function requestGasLoan() {
 
   const execRes = await fetch(new URL("/loans/gas/execute", baseUrl()), {
     method: "POST",
-    headers: { "content-type": "application/json", "x-moltbook-identity": identityToken },
+    headers: {
+      "content-type": "application/json",
+      ...(identityToken ? { "x-moltbook-identity": identityToken } : {}),
+      ...(devAuthToken ? { "x-dev-auth": devAuthToken } : {}),
+    },
     body: JSON.stringify({
-      borrower: parsed.borrower,
+      borrower: params.borrower,
       nonce: offer.nonce,
       borrowerSignature,
     }),
   });
-  if (!execRes.ok) throw new Error(`tabby execute failed (${execRes.status})`);
-  const execJson = await execRes.json();
+
+  const execJson = await readJsonSafe(execRes);
+  if (!execRes.ok) {
+    throw new Error(httpFailureMessage("tabby execute failed", execRes.status, execJson));
+  }
   if (!execJson?.ok) throw new Error(`tabby execute error: ${JSON.stringify(execJson)}`);
 
   const loanId = execJson?.data?.loanId;
@@ -971,7 +1010,7 @@ async function requestGasLoan() {
       trackedGasLoanIds: tracked,
       lastGasLoan: {
         loanId,
-        borrower: parsed.borrower,
+        borrower: params.borrower,
         principalWei: offer.principal,
         interestBps: Number(offer.interestBps),
         dueAt: Number(offer.dueAt),
@@ -980,7 +1019,203 @@ async function requestGasLoan() {
     });
   }
 
-  console.log(JSON.stringify(execJson.data, null, 2));
+  return execJson.data;
+}
+
+function parseWeiRequired(value: string | undefined, label: string): bigint {
+  if (!value) throw new Error(`Missing ${label}`);
+  if (!/^\d+$/.test(value)) throw new Error(`Invalid ${label}`);
+  return BigInt(value);
+}
+
+type EnsureGasParams = {
+  borrower: string;
+  minBalanceWei: bigint;
+  topupWei: bigint;
+  interestBps: number;
+  durationSeconds: number;
+  action: number;
+};
+
+function defaultEnsureGasParams(borrower: string): EnsureGasParams {
+  const minBalanceWei = BigInt(ENV.TABBY_MIN_TX_GAS_WEI ?? "10000000000000000");
+  const topupWei = BigInt(ENV.TABBY_GAS_TOPUP_WEI ?? "20000000000000000");
+  const interestBps = ENV.TABBY_GAS_TOPUP_INTEREST_BPS ?? 500;
+  const durationSeconds = ENV.TABBY_GAS_TOPUP_DURATION_SECONDS ?? 3600;
+  const action = ENV.TABBY_GAS_TOPUP_ACTION ?? 1;
+  return { borrower, minBalanceWei, topupWei, interestBps, durationSeconds, action };
+}
+
+async function ensureGasWithParams(params: EnsureGasParams) {
+  const { chain, rpcUrl } = await getRpcConfigFromStateOrEnv();
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
+  const balanceWei = await publicClient.getBalance({ address: params.borrower });
+
+  if (balanceWei >= params.minBalanceWei) {
+    return {
+      ok: true,
+      status: "sufficient",
+      borrower: params.borrower,
+      chainId: chain.id,
+      balanceWei: balanceWei.toString(),
+      minBalanceWei: params.minBalanceWei.toString(),
+    };
+  }
+
+  const needWei = params.minBalanceWei - balanceWei;
+  const principalWei = params.topupWei > needWei ? params.topupWei : needWei;
+
+  const result = await requestGasLoanWithParams({
+    borrower: params.borrower,
+    principalWei: principalWei.toString(),
+    interestBps: params.interestBps,
+    durationSeconds: params.durationSeconds,
+    action: params.action,
+  });
+
+  const newBalanceWei = await publicClient.getBalance({ address: params.borrower });
+  return {
+    ok: true,
+    status: "toppedUp",
+    borrower: params.borrower,
+    chainId: chain.id,
+    balanceWei: balanceWei.toString(),
+    minBalanceWei: params.minBalanceWei.toString(),
+    requestedPrincipalWei: principalWei.toString(),
+    result,
+    newBalanceWei: newBalanceWei.toString(),
+  };
+}
+
+function isInsufficientFundsError(error: unknown) {
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    msg.includes("insufficient funds") ||
+    msg.includes("insufficient balance") ||
+    msg.includes("insufficient funds for gas") ||
+    msg.includes("insufficient funds for intrinsic transaction cost")
+  );
+}
+
+async function autoTopupGasIfNeeded(borrower: string) {
+  const params = defaultEnsureGasParams(borrower);
+  if (params.minBalanceWei <= 0n) {
+    return { ok: true, status: "disabled", borrower };
+  }
+  return await ensureGasWithParams(params);
+}
+
+async function withAutoGas<T>(borrower: string, fn: () => Promise<T>): Promise<T> {
+  const noAutoGas = process.argv.includes("--no-auto-gas");
+  if (!noAutoGas) {
+    await autoTopupGasIfNeeded(borrower);
+  }
+
+  try {
+    return await fn();
+  } catch (err) {
+    if (noAutoGas || !isInsufficientFundsError(err)) throw err;
+    await autoTopupGasIfNeeded(borrower);
+    return await fn();
+  }
+}
+
+async function ensureGas() {
+  const jsonOut = process.argv.includes("--json");
+  const borrowerOverride = getArg("--borrower");
+
+  const minBalanceWeiArg = getArg("--min-balance-wei");
+  const topupWeiArg = getArg("--topup-wei");
+  const interestBpsArg = getArg("--interest-bps");
+  const durationSecondsArg = getArg("--duration-seconds");
+  const actionArg = getArg("--action");
+
+  const wallet = await loadWallet();
+  const borrower = borrowerOverride ?? wallet.address;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
+  if (borrower.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("Borrower must match ~/.config/tabby-borrower/wallet.json address");
+  }
+
+  const params = defaultEnsureGasParams(borrower);
+
+  if (minBalanceWeiArg) params.minBalanceWei = parseWeiRequired(minBalanceWeiArg, "--min-balance-wei");
+  if (topupWeiArg) params.topupWei = parseWeiRequired(topupWeiArg, "--topup-wei");
+
+  if (interestBpsArg) {
+    const v = Number(interestBpsArg);
+    if (!Number.isInteger(v) || v < 0) throw new Error("Invalid --interest-bps");
+    params.interestBps = v;
+  }
+
+  if (durationSecondsArg) {
+    const v = Number(durationSecondsArg);
+    if (!Number.isInteger(v) || v <= 0) throw new Error("Invalid --duration-seconds");
+    params.durationSeconds = v;
+  }
+
+  if (actionArg) {
+    const v = Number(actionArg);
+    if (!Number.isInteger(v) || v < 0 || v > 255) throw new Error("Invalid --action");
+    params.action = v;
+  }
+
+  const payload = await ensureGasWithParams(params);
+
+  if (jsonOut) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  if (payload.status === "sufficient") {
+    console.log(`Tabby: gas OK (~${formatEther(BigInt(payload.balanceWei))} MON).`);
+    return;
+  }
+
+  console.log(`Tabby: topped up gas. balance ~${formatEther(BigInt(payload.newBalanceWei))} MON.`);
+}
+
+async function requestGasLoan() {
+  const principalWei = getArg("--principal-wei");
+  const interestBps = getArg("--interest-bps");
+  const durationSeconds = getArg("--duration-seconds");
+  const action = getArg("--action");
+  const borrowerOverride = getArg("--borrower");
+  const metadataHash = getArg("--metadata-hash");
+
+  const inputSchema = z.object({
+    principalWei: z.string().regex(/^\d+$/),
+    interestBps: z.coerce.number().int().min(0),
+    durationSeconds: z.coerce.number().int().positive(),
+    action: z.coerce.number().int().min(0).max(255),
+    borrower: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    metadataHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/).optional(),
+  });
+
+  const wallet = await loadWallet();
+  const borrower = borrowerOverride ?? wallet.address;
+  if (borrower.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("Borrower must match ~/.config/tabby-borrower/wallet.json address");
+  }
+  const parsed = inputSchema.parse({
+    principalWei,
+    interestBps,
+    durationSeconds,
+    action,
+    borrower,
+    metadataHash,
+  });
+
+  const result = await requestGasLoanWithParams({
+    borrower: parsed.borrower,
+    principalWei: parsed.principalWei,
+    interestBps: parsed.interestBps,
+    durationSeconds: parsed.durationSeconds,
+    action: parsed.action,
+    metadataHash: parsed.metadataHash,
+  });
+
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function status() {
@@ -1228,18 +1463,21 @@ async function approveCollateral() {
   const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
   const owner = wallet.address;
 
-  if (!max) {
-    await ensureAllowance({
-      chain: cfg.chain,
-      rpcUrl: cfg.rpcUrl,
-      publicClient,
-      walletClient,
-      token: collateralAsset,
-      owner,
-      spender: cfg.positionManager,
-      required: amountWei,
-    });
-  } else {
+  await withAutoGas(owner, async () => {
+    if (!max) {
+      await ensureAllowance({
+        chain: cfg.chain,
+        rpcUrl: cfg.rpcUrl,
+        publicClient,
+        walletClient,
+        token: collateralAsset,
+        owner,
+        spender: cfg.positionManager,
+        required: amountWei,
+      });
+      return;
+    }
+
     await ensureAllowance({
       chain: cfg.chain,
       rpcUrl: cfg.rpcUrl,
@@ -1250,7 +1488,7 @@ async function approveCollateral() {
       spender: cfg.positionManager,
       required: MAX_UINT256,
     });
-  }
+  });
 
   const allowance = await publicClient.readContract({
     address: collateralAsset,
@@ -1341,27 +1579,30 @@ async function openSecuredLoan() {
 
   const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
 
-  if (!noAutoApprove) {
-    await ensureAllowance({
-      chain: cfg.chain,
-      rpcUrl: cfg.rpcUrl,
-      publicClient,
-      walletClient,
-      token: collateralAsset,
-      owner: wallet.address,
-      spender: cfg.positionManager,
-      required: collateralAmountWei,
+  const { hash, receipt } = await withAutoGas(wallet.address, async () => {
+    if (!noAutoApprove) {
+      await ensureAllowance({
+        chain: cfg.chain,
+        rpcUrl: cfg.rpcUrl,
+        publicClient,
+        walletClient,
+        token: collateralAsset,
+        owner: wallet.address,
+        spender: cfg.positionManager,
+        required: collateralAmountWei,
+      });
+    }
+
+    const hash = await walletClient.writeContract({
+      address: cfg.loanManager,
+      abi: loanManagerAbi,
+      functionName: "openLoan",
+      args: [cfg.debtAsset, principalWei, BigInt(interestBps), collateralAsset, collateralAmountWei, BigInt(dueAt)],
     });
-  }
 
-  const hash = await walletClient.writeContract({
-    address: cfg.loanManager,
-    abi: loanManagerAbi,
-    functionName: "openLoan",
-    args: [cfg.debtAsset, principalWei, BigInt(interestBps), collateralAsset, collateralAmountWei, BigInt(dueAt)],
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return { hash, receipt };
   });
-
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
 
   let opened: { loanId: number; positionId: number } | undefined = undefined;
 	for (const log of receipt.logs ?? []) {
@@ -1534,27 +1775,30 @@ async function repaySecuredLoan() {
 
   const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
 
-  if (!noAutoApprove) {
-    await ensureAllowance({
-      chain: cfg.chain,
-      rpcUrl: cfg.rpcUrl,
-      publicClient,
-      walletClient,
-      token: asset,
-      owner: wallet.address,
-      spender: cfg.loanManager,
-      required: repayWei,
+  const { hash, receipt } = await withAutoGas(wallet.address, async () => {
+    if (!noAutoApprove) {
+      await ensureAllowance({
+        chain: cfg.chain,
+        rpcUrl: cfg.rpcUrl,
+        publicClient,
+        walletClient,
+        token: asset,
+        owner: wallet.address,
+        spender: cfg.loanManager,
+        required: repayWei,
+      });
+    }
+
+    const hash = await walletClient.writeContract({
+      address: cfg.loanManager,
+      abi: loanManagerAbi,
+      functionName: "repay",
+      args: [id, repayWei],
     });
-  }
 
-  const hash = await walletClient.writeContract({
-    address: cfg.loanManager,
-    abi: loanManagerAbi,
-    functionName: "repay",
-    args: [id, repayWei],
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return { hash, receipt };
   });
-
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
   const newOutstanding = await publicClient.readContract({
     address: cfg.loanManager,
     abi: loanManagerAbi,
@@ -1632,14 +1876,17 @@ async function withdrawCollateral() {
   if (withdrawWei > collateralAmountWei) throw new Error("Withdraw amount exceeds collateral");
 
   const walletClient = createWalletClient({ account, chain: cfg.chain, transport: http(cfg.rpcUrl) }) as any;
-  const hash = await walletClient.writeContract({
-    address: cfg.positionManager,
-    abi: positionManagerAbi,
-    functionName: "removeCollateral",
-    args: [BigInt(positionId), withdrawWei],
-  });
+  const { hash, receipt } = await withAutoGas(wallet.address, async () => {
+    const hash = await walletClient.writeContract({
+      address: cfg.positionManager,
+      abi: positionManagerAbi,
+      functionName: "removeCollateral",
+      args: [BigInt(positionId), withdrawWei],
+    });
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return { hash, receipt };
+  });
   console.log(
     JSON.stringify(
       {
@@ -1663,9 +1910,25 @@ async function main() {
   }
 
   if (cmd === "init-wallet") {
+    const force = process.argv.includes("--force");
+    if (!force) {
+      try {
+        const existing = await loadWallet();
+        console.log(JSON.stringify({ address: existing.address, walletPath: existing.path, existing: true }, null, 2));
+        return;
+      } catch {
+        // no existing wallet
+      }
+    }
+
     const pk = generatePrivateKey();
     const { address, path: p } = await saveWallet(pk);
-    console.log(JSON.stringify({ address, walletPath: p }, null, 2));
+    console.log(JSON.stringify({ address, walletPath: p, existing: false }, null, 2));
+    return;
+  }
+
+  if (cmd === "ensure-gas") {
+    await ensureGas();
     return;
   }
 
