@@ -1182,7 +1182,13 @@ async function ensureGas() {
     params.action = v;
   }
 
-  const payload = await ensureGasWithParams(params);
+  let payload;
+  try {
+    payload = await ensureGasWithParams(params);
+  } catch (err) {
+    if (!isActiveGasLoanLimitError(err) || params.action === 255) throw err;
+    payload = await ensureGasWithParams({ ...params, action: 255, topupWei: 0n });
+  }
 
   if (jsonOut) {
     console.log(JSON.stringify(payload, null, 2));
