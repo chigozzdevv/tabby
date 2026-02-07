@@ -1106,12 +1106,25 @@ function isInsufficientFundsError(error: unknown) {
   );
 }
 
+function isActiveGasLoanLimitError(error: unknown) {
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return msg.includes("active-loan") || msg.includes("borrower has an active gas loan");
+}
+
 async function autoTopupGasIfNeeded(borrower: string) {
   const params = defaultEnsureGasParams(borrower);
   if (params.minBalanceWei <= 0n) {
     return { ok: true, status: "disabled", borrower };
   }
-  return await ensureGasWithParams(params);
+
+  try {
+    return await ensureGasWithParams(params);
+  } catch (err) {
+    // If we already have an active gas loan, a normal topup (action=1) is blocked. Fall back to repay-gas (action=255),
+    // which the server allows alongside an active loan, within the configured caps.
+    if (!isActiveGasLoanLimitError(err) || params.action === 255) throw err;
+    return await ensureGasWithParams({ ...params, action: 255, topupWei: 0n });
+  }
 }
 
 async function withAutoGas<T>(borrower: string, fn: () => Promise<T>): Promise<T> {
