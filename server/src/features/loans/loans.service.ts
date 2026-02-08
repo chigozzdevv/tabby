@@ -664,6 +664,18 @@ type RegisterBorrowerPolicyInput = {
   borrowerSignature: Hex;
 };
 
+function errorMessage(error: unknown) {
+  if (typeof error === "object" && error !== null) {
+    const asAny = error as Record<string, unknown>;
+    const shortMessage = typeof asAny.shortMessage === "string" ? asAny.shortMessage : undefined;
+    const details = typeof asAny.details === "string" ? asAny.details : undefined;
+    const message = typeof asAny.message === "string" ? asAny.message : undefined;
+    const reason = typeof asAny.reason === "string" ? asAny.reason : undefined;
+    return (shortMessage ?? details ?? reason ?? message ?? String(error)).slice(0, 500);
+  }
+  return String(error).slice(0, 500);
+}
+
 const borrowerPolicyAuthTypes = {
   BorrowerPolicyAuth: [
     { name: "borrower", type: "address" },
@@ -706,18 +718,28 @@ export async function registerBorrowerPolicy(agentId: string, input: RegisterBor
   if (!signatureOk) throw new HttpError(401, "invalid-borrower-signature", "Invalid borrower signature");
 
   const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
-  const policyRegistry = await publicClient.readContract({
-    address: agentLoanManager,
-    abi: agentLoanManagerAbi,
-    functionName: "policyRegistry",
-  });
+  let policyRegistry: `0x${string}`;
+  try {
+    policyRegistry = await publicClient.readContract({
+      address: agentLoanManager,
+      abi: agentLoanManagerAbi,
+      functionName: "policyRegistry",
+    });
+  } catch (error: unknown) {
+    throw new HttpError(502, "rpc-error", `Failed to read policyRegistry: ${errorMessage(error)}`);
+  }
 
-  const existing = await publicClient.readContract({
-    address: policyRegistry,
-    abi: borrowerPolicyRegistryAbi,
-    functionName: "policies",
-    args: [borrower],
-  });
+  let existing: readonly [`0x${string}`, bigint, bigint, bigint, bigint, boolean];
+  try {
+    existing = await publicClient.readContract({
+      address: policyRegistry,
+      abi: borrowerPolicyRegistryAbi,
+      functionName: "policies",
+      args: [borrower],
+    });
+  } catch (error: unknown) {
+    throw new HttpError(502, "rpc-error", `Failed to read borrower policy: ${errorMessage(error)}`);
+  }
 
   const [existingOwner, maxPrincipal, maxInterestBps, maxDurationSeconds, allowedActions, enabled] = existing;
   if (existingOwner !== "0x0000000000000000000000000000000000000000") {
@@ -751,33 +773,52 @@ export async function registerBorrowerPolicy(agentId: string, input: RegisterBor
       account: tabbyAccount,
     });
   } catch (error: unknown) {
-    const reread = await publicClient.readContract({
-      address: policyRegistry,
-      abi: borrowerPolicyRegistryAbi,
-      functionName: "policies",
-      args: [borrower],
-    });
-    if (reread[0] !== "0x0000000000000000000000000000000000000000") {
-      return { status: "alreadyRegistered", borrower, policyRegistry, owner: reread[0] };
+    try {
+      const reread = await publicClient.readContract({
+        address: policyRegistry,
+        abi: borrowerPolicyRegistryAbi,
+        functionName: "policies",
+        args: [borrower],
+      });
+      if (reread[0] !== "0x0000000000000000000000000000000000000000") {
+        return { status: "alreadyRegistered", borrower, policyRegistry, owner: reread[0] };
+      }
+    } catch {
+      // ignore reread failures and fall through to returning the original error
     }
-    throw error;
+    throw new HttpError(502, "policy-register-failed", `Failed to register borrower policy: ${errorMessage(error)}`);
   }
 
-  const registerReceipt = await publicClient.waitForTransactionReceipt({ hash: registerTxHash });
+  let registerReceipt;
+  try {
+    registerReceipt = await publicClient.waitForTransactionReceipt({ hash: registerTxHash });
+  } catch (error: unknown) {
+    throw new HttpError(502, "policy-register-tx-timeout", `Failed waiting for policy registration tx: ${errorMessage(error)}`);
+  }
   if (registerReceipt.status !== "success") throw new HttpError(502, "policy-register-reverted", "Policy registration reverted");
 
   const finalOwner = env.GOVERNANCE ? asAddress(env.GOVERNANCE) : tabbyAccount.address;
 
   let transferTxHash: Hex | undefined;
   if (env.GOVERNANCE && env.GOVERNANCE.toLowerCase() !== tabbyAccount.address.toLowerCase()) {
-    transferTxHash = await walletClient.writeContract({
-      address: policyRegistry,
-      abi: borrowerPolicyRegistryAbi,
-      functionName: "transferBorrowerOwnership",
-      args: [borrower, asAddress(env.GOVERNANCE)],
-      account: tabbyAccount,
-    });
-    const transferReceipt = await publicClient.waitForTransactionReceipt({ hash: transferTxHash });
+    try {
+      transferTxHash = await walletClient.writeContract({
+        address: policyRegistry,
+        abi: borrowerPolicyRegistryAbi,
+        functionName: "transferBorrowerOwnership",
+        args: [borrower, asAddress(env.GOVERNANCE)],
+        account: tabbyAccount,
+      });
+    } catch (error: unknown) {
+      throw new HttpError(502, "policy-owner-transfer-failed", `Failed to transfer policy ownership: ${errorMessage(error)}`);
+    }
+
+    let transferReceipt;
+    try {
+      transferReceipt = await publicClient.waitForTransactionReceipt({ hash: transferTxHash });
+    } catch (error: unknown) {
+      throw new HttpError(502, "policy-owner-transfer-tx-timeout", `Failed waiting for owner transfer tx: ${errorMessage(error)}`);
+    }
     if (transferReceipt.status !== "success") {
       throw new HttpError(502, "policy-owner-transfer-reverted", "Policy ownership transfer reverted");
     }
