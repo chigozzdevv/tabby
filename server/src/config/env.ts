@@ -51,6 +51,15 @@ const envSchema = z.object({
   REPAY_GAS_MAX_PRINCIPAL_WEI: z.string().regex(/^\d+$/).default("10000000000000000"),
   REPAY_GAS_MAX_DURATION_SECONDS: z.coerce.number().int().positive().default(3600),
 
+  // Default per-borrower policy values used by the server to auto-register new borrower wallets (one-time).
+  BORROWER_POLICY_MAX_PRINCIPAL_WEI: z.string().regex(/^\d+$/).default("50000000000000000"),
+  BORROWER_POLICY_MAX_INTEREST_BPS: z.coerce.number().int().min(0).max(1_000_000).default(5000),
+  BORROWER_POLICY_MAX_DURATION_SECONDS: z.coerce.number().int().positive().default(7200),
+  // Default: allow action=1 + action=255.
+  BORROWER_POLICY_ALLOWED_ACTIONS: z.string().regex(/^\d+$/).default(
+    "57896044618658097711785492504343953926634992332820282019728792003956564819970"
+  ),
+
   ACTIVITY_SYNC_ENABLED: booleanString.optional().default("true").transform((v) => v === "true"),
   ACTIVITY_START_BLOCK: z.preprocess(emptyToUndefined, z.coerce.number().int().nonnegative().optional()),
   ACTIVITY_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),

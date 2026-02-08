@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { decodeEventLog, type Hex } from "viem";
+import { decodeEventLog, verifyTypedData, type Hex } from "viem";
 import { getDb } from "@/db/mongodb.js";
 import { env } from "@/config/env.js";
 import { HttpError } from "@/shared/http-errors.js";
@@ -99,6 +99,29 @@ const agentLoanManagerAbi = [
 ] as const;
 
 const borrowerPolicyRegistryAbi = [
+  {
+    type: "function",
+    name: "registerBorrower",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "borrower", type: "address" },
+      { name: "maxPrincipal", type: "uint256" },
+      { name: "maxInterestBps", type: "uint256" },
+      { name: "maxDurationSeconds", type: "uint256" },
+      { name: "allowedActions", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "transferBorrowerOwnership",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "borrower", type: "address" },
+      { name: "newOwner", type: "address" },
+    ],
+    outputs: [],
+  },
   {
     type: "function",
     name: "policies",
@@ -632,4 +655,165 @@ export async function executeGasLoanOffer(agentId: string, input: GasLoanExecute
   });
 
   return { txHash, loanId };
+}
+
+type RegisterBorrowerPolicyInput = {
+  borrower: `0x${string}`;
+  issuedAt: number;
+  expiresAt: number;
+  borrowerSignature: Hex;
+};
+
+const borrowerPolicyAuthTypes = {
+  BorrowerPolicyAuth: [
+    { name: "borrower", type: "address" },
+    { name: "issuedAt", type: "uint256" },
+    { name: "expiresAt", type: "uint256" },
+  ],
+} as const;
+
+export async function registerBorrowerPolicy(agentId: string, input: RegisterBorrowerPolicyInput) {
+  const borrower = asAddress(input.borrower);
+  const now = await chainNowSeconds();
+
+  if (!Number.isInteger(input.issuedAt) || input.issuedAt <= 0) throw new HttpError(400, "invalid-issuedAt", "issuedAt invalid");
+  if (!Number.isInteger(input.expiresAt) || input.expiresAt <= 0) throw new HttpError(400, "invalid-expiresAt", "expiresAt invalid");
+
+  if (input.expiresAt <= now) throw new HttpError(400, "signature-expired", "Borrower signature expired");
+  if (input.issuedAt > now + 60) throw new HttpError(400, "signature-issued-in-future", "Borrower signature issuedAt is in the future");
+  if (input.expiresAt - input.issuedAt > 3600) {
+    throw new HttpError(400, "signature-window-too-large", "Borrower signature validity window too large");
+  }
+
+  const signatureOk = verifyTypedData({
+    address: borrower,
+    domain: {
+      name: "TabbyBorrowerPolicy",
+      version: "1",
+      chainId: chain.id,
+      verifyingContract: asAddress(env.AGENT_LOAN_MANAGER_ADDRESS),
+    },
+    types: borrowerPolicyAuthTypes,
+    primaryType: "BorrowerPolicyAuth",
+    message: {
+      borrower,
+      issuedAt: BigInt(input.issuedAt),
+      expiresAt: BigInt(input.expiresAt),
+    },
+    signature: input.borrowerSignature,
+  });
+
+  if (!signatureOk) throw new HttpError(401, "invalid-borrower-signature", "Invalid borrower signature");
+
+  const agentLoanManager = asAddress(env.AGENT_LOAN_MANAGER_ADDRESS);
+  const policyRegistry = await publicClient.readContract({
+    address: agentLoanManager,
+    abi: agentLoanManagerAbi,
+    functionName: "policyRegistry",
+  });
+
+  const existing = await publicClient.readContract({
+    address: policyRegistry,
+    abi: borrowerPolicyRegistryAbi,
+    functionName: "policies",
+    args: [borrower],
+  });
+
+  const [existingOwner, maxPrincipal, maxInterestBps, maxDurationSeconds, allowedActions, enabled] = existing;
+  if (existingOwner !== "0x0000000000000000000000000000000000000000") {
+    return {
+      status: "alreadyRegistered",
+      borrower,
+      policyRegistry,
+      owner: existingOwner,
+      policy: {
+        maxPrincipal: maxPrincipal.toString(),
+        maxInterestBps: Number(maxInterestBps),
+        maxDurationSeconds: Number(maxDurationSeconds),
+        allowedActions: allowedActions.toString(),
+        enabled,
+      },
+    };
+  }
+
+  const maxPrincipalWei = BigInt(env.BORROWER_POLICY_MAX_PRINCIPAL_WEI);
+  const maxInterestBpsWei = BigInt(env.BORROWER_POLICY_MAX_INTEREST_BPS);
+  const maxDurationSecondsWei = BigInt(env.BORROWER_POLICY_MAX_DURATION_SECONDS);
+  const allowedActionsWei = BigInt(env.BORROWER_POLICY_ALLOWED_ACTIONS);
+
+  let registerTxHash: Hex;
+  try {
+    registerTxHash = await walletClient.writeContract({
+      address: policyRegistry,
+      abi: borrowerPolicyRegistryAbi,
+      functionName: "registerBorrower",
+      args: [borrower, maxPrincipalWei, maxInterestBpsWei, maxDurationSecondsWei, allowedActionsWei],
+      account: tabbyAccount,
+    });
+  } catch (error: unknown) {
+    const reread = await publicClient.readContract({
+      address: policyRegistry,
+      abi: borrowerPolicyRegistryAbi,
+      functionName: "policies",
+      args: [borrower],
+    });
+    if (reread[0] !== "0x0000000000000000000000000000000000000000") {
+      return { status: "alreadyRegistered", borrower, policyRegistry, owner: reread[0] };
+    }
+    throw error;
+  }
+
+  const registerReceipt = await publicClient.waitForTransactionReceipt({ hash: registerTxHash });
+  if (registerReceipt.status !== "success") throw new HttpError(502, "policy-register-reverted", "Policy registration reverted");
+
+  const finalOwner = env.GOVERNANCE ? asAddress(env.GOVERNANCE) : tabbyAccount.address;
+
+  let transferTxHash: Hex | undefined;
+  if (env.GOVERNANCE && env.GOVERNANCE.toLowerCase() !== tabbyAccount.address.toLowerCase()) {
+    transferTxHash = await walletClient.writeContract({
+      address: policyRegistry,
+      abi: borrowerPolicyRegistryAbi,
+      functionName: "transferBorrowerOwnership",
+      args: [borrower, asAddress(env.GOVERNANCE)],
+      account: tabbyAccount,
+    });
+    const transferReceipt = await publicClient.waitForTransactionReceipt({ hash: transferTxHash });
+    if (transferReceipt.status !== "success") {
+      throw new HttpError(502, "policy-owner-transfer-reverted", "Policy ownership transfer reverted");
+    }
+  }
+
+  await recordActivityEvent({
+    type: "borrower-policy.registered",
+    dedupeKey: `borrower-policy.registered:${env.CHAIN_ID}:${policyRegistry.toLowerCase()}:${borrower.toLowerCase()}`,
+    agentId,
+    borrower: borrower.toLowerCase(),
+    txHash: registerTxHash,
+    payload: {
+      borrower,
+      policyRegistry,
+      owner: finalOwner,
+      maxPrincipalWei: maxPrincipalWei.toString(),
+      maxInterestBps: env.BORROWER_POLICY_MAX_INTEREST_BPS,
+      maxDurationSeconds: env.BORROWER_POLICY_MAX_DURATION_SECONDS,
+      allowedActions: allowedActionsWei.toString(),
+      transferTxHash,
+    },
+  });
+
+  return {
+    status: "registered",
+    borrower,
+    policyRegistry,
+    owner: finalOwner,
+    registerTxHash,
+    transferTxHash,
+    policy: {
+      maxPrincipalWei: maxPrincipalWei.toString(),
+      maxInterestBps: env.BORROWER_POLICY_MAX_INTEREST_BPS,
+      maxDurationSeconds: env.BORROWER_POLICY_MAX_DURATION_SECONDS,
+      allowedActions: allowedActionsWei.toString(),
+      enabled: true,
+    },
+  };
 }

@@ -1,4 +1,5 @@
 export type ActivityEventType =
+  | "borrower-policy.registered"
   | "gas-loan.offer-created"
   | "gas-loan.offer-expired"
   | "gas-loan.offer-canceled"
@@ -25,4 +26,3 @@ export type ActivityCursorDoc = {
   lastProcessedBlock: number;
   updatedAt: Date;
 };
-

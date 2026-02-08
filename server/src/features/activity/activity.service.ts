@@ -25,6 +25,7 @@ const listFilterSchema = z.object({
   loanId: z.coerce.number().int().positive().optional(),
   type: z
     .enum([
+      "borrower-policy.registered",
       "gas-loan.offer-created",
       "gas-loan.offer-expired",
       "gas-loan.offer-canceled",

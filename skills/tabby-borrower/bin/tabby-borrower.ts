@@ -912,6 +912,70 @@ function httpFailureMessage(prefix: string, status: number, json: any | undefine
   return `${prefix} (${status})`;
 }
 
+async function registerBorrowerPolicyOnServer(
+  borrower: string,
+  identityToken: string | undefined,
+  devAuthToken: string | undefined
+) {
+  const wallet = await loadWallet();
+  if (borrower.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("Borrower must match ~/.config/tabby-borrower/wallet.json address");
+  }
+
+  const { chain, agentLoanManager } = await getGasLoanConfigFromStateOrEnv();
+
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + 600;
+
+  const domain = {
+    name: "TabbyBorrowerPolicy",
+    version: "1",
+    chainId: chain.id,
+    verifyingContract: agentLoanManager as `0x${string}`,
+  };
+  const types = {
+    BorrowerPolicyAuth: [
+      { name: "borrower", type: "address" },
+      { name: "issuedAt", type: "uint256" },
+      { name: "expiresAt", type: "uint256" },
+    ],
+  };
+
+  const account = privateKeyToAccount(wallet.privateKey as `0x${string}`);
+  const borrowerSignature = await account.signTypedData({
+    domain,
+    types,
+    primaryType: "BorrowerPolicyAuth",
+    message: {
+      borrower,
+      issuedAt: BigInt(issuedAt),
+      expiresAt: BigInt(expiresAt),
+    },
+  });
+
+  const res = await fetch(new URL("/loans/gas/policy/register", baseUrl()), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(identityToken ? { "x-moltbook-identity": identityToken } : {}),
+      ...(devAuthToken ? { "x-dev-auth": devAuthToken } : {}),
+    },
+    body: JSON.stringify({
+      borrower,
+      issuedAt,
+      expiresAt,
+      borrowerSignature,
+    }),
+  });
+
+  const json = await readJsonSafe(res);
+  if (!res.ok) {
+    throw new Error(httpFailureMessage("tabby policy register failed", res.status, json));
+  }
+  if (!json?.ok) throw new Error(`tabby policy register error: ${JSON.stringify(json)}`);
+  return json.data;
+}
+
 async function requestGasLoanWithParams(params: GasLoanOfferParams) {
   const wallet = await loadWallet();
   if (params.borrower.toLowerCase() !== wallet.address.toLowerCase()) {
@@ -924,27 +988,36 @@ async function requestGasLoanWithParams(params: GasLoanOfferParams) {
     throw new Error("Missing auth: set MOLTBOOK_API_KEY (Moltbook) or TABBY_DEV_AUTH_TOKEN (dev)");
   }
 
-  const offerRes = await fetch(new URL("/loans/gas/offer", baseUrl()), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(identityToken ? { "x-moltbook-identity": identityToken } : {}),
-      ...(devAuthToken ? { "x-dev-auth": devAuthToken } : {}),
-    },
-    body: JSON.stringify({
-      borrower: params.borrower,
-      principalWei: params.principalWei,
-      interestBps: params.interestBps,
-      durationSeconds: params.durationSeconds,
-      action: params.action,
-      metadataHash: params.metadataHash,
-    }),
-  });
-
-  const offerJson = await readJsonSafe(offerRes);
-  if (!offerRes.ok) {
-    throw new Error(httpFailureMessage("tabby offer failed", offerRes.status, offerJson));
+  async function requestOffer() {
+    const offerRes = await fetch(new URL("/loans/gas/offer", baseUrl()), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(identityToken ? { "x-moltbook-identity": identityToken } : {}),
+        ...(devAuthToken ? { "x-dev-auth": devAuthToken } : {}),
+      },
+      body: JSON.stringify({
+        borrower: params.borrower,
+        principalWei: params.principalWei,
+        interestBps: params.interestBps,
+        durationSeconds: params.durationSeconds,
+        action: params.action,
+        metadataHash: params.metadataHash,
+      }),
+    });
+    const offerJson = await readJsonSafe(offerRes);
+    return { offerRes, offerJson };
   }
+
+  let { offerRes, offerJson } = await requestOffer();
+  if (!offerRes.ok) {
+    if (offerRes.status === 403 && offerJson?.code === "policy-not-set") {
+      await registerBorrowerPolicyOnServer(params.borrower, identityToken, devAuthToken);
+      ({ offerRes, offerJson } = await requestOffer());
+    }
+  }
+
+  if (!offerRes.ok) throw new Error(httpFailureMessage("tabby offer failed", offerRes.status, offerJson));
   if (!offerJson?.ok) throw new Error(`tabby offer error: ${JSON.stringify(offerJson)}`);
 
   const data = offerJson.data;
