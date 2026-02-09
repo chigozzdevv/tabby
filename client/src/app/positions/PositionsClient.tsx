@@ -769,6 +769,10 @@ export default function PositionsClient() {
   const usdcStakeSharesWei = parseUnitsOrNull(usdcStakeShares.trim(), usdcDecimals);
   const usdcUnstakeSharesWei = parseUnitsOrNull(usdcUnstakeShares.trim(), usdcDecimals);
 
+  const showUsdcPool = Boolean(poolData?.usdc);
+  const poolGridColsClass = showUsdcPool ? "lg:grid-cols-3" : "lg:grid-cols-2";
+  const positionGridColsClass = showUsdcPool ? "lg:grid-cols-3" : "lg:grid-cols-2";
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
@@ -808,7 +812,7 @@ export default function PositionsClient() {
           </div>
         </div>
 
-        <div className="mt-10 grid gap-6 lg:grid-cols-3">
+        <div className={`mt-10 grid gap-6 ${poolGridColsClass}`}>
           <div className="rounded-3xl border border-white/10 bg-neutral-950/60 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -891,47 +895,47 @@ export default function PositionsClient() {
             )}
           </div>
 
-          <div className="rounded-3xl border border-white/10 bg-neutral-950/60 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool</p>
-                <h2 className="mt-2 text-xl font-semibold text-white">{usdcSymbol} liquidity</h2>
+          {showUsdcPool ? (
+            <div className="rounded-3xl border border-white/10 bg-neutral-950/60 p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool</p>
+                  <h2 className="mt-2 text-xl font-semibold text-white">{usdcSymbol} liquidity</h2>
+                </div>
+                <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-neutral-400">
+                  {poolData?.usdc ? "Active" : "Not configured"}
+                </span>
               </div>
-              <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-neutral-400">
-                {poolData?.usdc ? "Active" : "Not configured"}
-              </span>
+              {loadingPools ? (
+                <p className="mt-4 text-sm text-neutral-400">Loading pool data…</p>
+              ) : poolData?.usdc ? (
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Total assets</p>
+                    <p className="mt-2 text-sm font-semibold text-white">
+                      {formatAmount(poolData.usdc.totalAssetsWei, usdcDecimals, usdcSymbol)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Pool balance</p>
+                    <p className="mt-2 text-sm font-semibold text-white">
+                      {formatAmount(poolData.usdc.poolBalanceWei, usdcDecimals, usdcSymbol)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Outstanding</p>
+                    <p className="mt-2 text-sm font-semibold text-white">
+                      {formatAmount(poolData.usdc.totalOutstandingPrincipalWei, usdcDecimals, usdcSymbol)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Utilization</p>
+                    <p className="mt-2 text-sm font-semibold text-white">{usdcUtilization}</p>
+                  </div>
+                </div>
+              ) : null}
             </div>
-            {loadingPools ? (
-              <p className="mt-4 text-sm text-neutral-400">Loading pool data…</p>
-            ) : poolData?.usdc ? (
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Total assets</p>
-                  <p className="mt-2 text-sm font-semibold text-white">
-                    {formatAmount(poolData.usdc.totalAssetsWei, usdcDecimals, usdcSymbol)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Pool balance</p>
-                  <p className="mt-2 text-sm font-semibold text-white">
-                    {formatAmount(poolData.usdc.poolBalanceWei, usdcDecimals, usdcSymbol)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Outstanding</p>
-                  <p className="mt-2 text-sm font-semibold text-white">
-                    {formatAmount(poolData.usdc.totalOutstandingPrincipalWei, usdcDecimals, usdcSymbol)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Utilization</p>
-                  <p className="mt-2 text-sm font-semibold text-white">{usdcUtilization}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-neutral-500">USDC pool not configured.</p>
-            )}
-          </div>
+          ) : null}
         </div>
 
         <div className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8">
@@ -943,7 +947,7 @@ export default function PositionsClient() {
             {loadingPositions ? <span className="text-xs text-neutral-400">Refreshing…</span> : null}
           </div>
           {walletAddress ? (
-            <div className="mt-6 grid gap-6 lg:grid-cols-3">
+            <div className={`mt-6 grid gap-6 ${positionGridColsClass}`}>
               <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
                 <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">Native pool position</p>
                 {positionNative ? (
@@ -1236,141 +1240,139 @@ export default function PositionsClient() {
                 ) : null}
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
-                <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool position</p>
-                {positionUsdc ? (
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Shares</p>
-                      <p className="mt-2 text-sm font-semibold text-white">
-                        {formatUnitsCompact(positionUsdc.shares, usdcDecimals)}
-                      </p>
+              {showUsdcPool ? (
+                <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
+                  <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool position</p>
+                  {positionUsdc ? (
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Shares</p>
+                        <p className="mt-2 text-sm font-semibold text-white">
+                          {formatUnitsCompact(positionUsdc.shares, usdcDecimals)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Estimated assets</p>
+                        <p className="mt-2 text-sm font-semibold text-white">
+                          {formatAmount(positionUsdc.estimatedAssetsWei, usdcDecimals, usdcSymbol)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Share of pool</p>
+                        <p className="mt-2 text-sm font-semibold text-white">
+                          {formatPercent(positionUsdc.shares, positionUsdc.totalShares)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Earned rewards</p>
+                        <p className="mt-2 text-sm font-semibold text-white">
+                          {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Estimated assets</p>
-                      <p className="mt-2 text-sm font-semibold text-white">
-                        {formatAmount(positionUsdc.estimatedAssetsWei, usdcDecimals, usdcSymbol)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Share of pool</p>
-                      <p className="mt-2 text-sm font-semibold text-white">
-                        {formatPercent(positionUsdc.shares, positionUsdc.totalShares)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Earned rewards</p>
-                      <p className="mt-2 text-sm font-semibold text-white">
-                        {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="mt-4 text-sm text-neutral-500">No USDC position found.</p>
-                )}
+                  ) : (
+                    <p className="mt-4 text-sm text-neutral-500">No USDC position found.</p>
+                  )}
 
-                <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Deposit {usdcSymbol}</p>
-                    <input
-                      value={usdcDeposit}
-                      onChange={(event) => setUsdcDeposit(event.target.value)}
-                      placeholder="0.0"
-                      className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleUsdcDeposit}
-                      disabled={usdcDepositWei === null || !poolData?.usdc?.asset || isBusy || isWrongChain}
-                      className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {pendingTxLabel === "USDC deposit" ? "Processing..." : "Approve + Deposit"}
-                    </button>
-                  </div>
-                  {usdcShares > BigInt(0) ? (
+                  <div className="mt-6 grid gap-4 sm:grid-cols-2">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
+                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Deposit {usdcSymbol}</p>
                       <input
-                        value={usdcWithdrawShares}
-                        onChange={(event) => setUsdcWithdrawShares(event.target.value)}
-                        placeholder="Shares"
+                        value={usdcDeposit}
+                        onChange={(event) => setUsdcDeposit(event.target.value)}
+                        placeholder="0.0"
                         className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
                       />
                       <button
                         type="button"
-                        onClick={handleUsdcWithdraw}
-                        disabled={
-                          usdcWithdrawSharesWei === null || usdcWithdrawSharesWei > usdcShares || isBusy || isWrongChain
-                        }
-                        className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={handleUsdcDeposit}
+                        disabled={usdcDepositWei === null || !poolData?.usdc?.asset || isBusy || isWrongChain}
+                        className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {pendingTxLabel === "USDC withdraw" ? "Processing..." : "Withdraw"}
+                        {pendingTxLabel === "USDC deposit" ? "Processing..." : "Approve + Deposit"}
                       </button>
                     </div>
-                  ) : null}
-                </div>
-
-                {rewards?.usdc?.address && (usdcShares > BigInt(0) || usdcStakedShares > BigInt(0) || usdcEarned > BigInt(0)) ? (
-                  <div className="mt-6 grid gap-4 sm:grid-cols-3">
                     {usdcShares > BigInt(0) ? (
                       <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
+                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
                         <input
-                          value={usdcStakeShares}
-                          onChange={(event) => setUsdcStakeShares(event.target.value)}
+                          value={usdcWithdrawShares}
+                          onChange={(event) => setUsdcWithdrawShares(event.target.value)}
                           placeholder="Shares"
                           className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
                         />
                         <button
                           type="button"
-                          onClick={handleUsdcStake}
-                          disabled={usdcStakeSharesWei === null || usdcStakeSharesWei > usdcShares || isBusy || isWrongChain}
-                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                          onClick={handleUsdcWithdraw}
+                          disabled={usdcWithdrawSharesWei === null || usdcWithdrawSharesWei > usdcShares || isBusy || isWrongChain}
+                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {pendingTxLabel === "Stake USDC shares" ? "Processing..." : "Stake"}
-                        </button>
-                      </div>
-                    ) : null}
-                    {usdcStakedShares > BigInt(0) ? (
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
-                        <input
-                          value={usdcUnstakeShares}
-                          onChange={(event) => setUsdcUnstakeShares(event.target.value)}
-                          placeholder="Shares"
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleUsdcUnstake}
-                          disabled={
-                            usdcUnstakeSharesWei === null || usdcUnstakeSharesWei > usdcStakedShares || isBusy || isWrongChain
-                          }
-                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {pendingTxLabel === "Unstake USDC shares" ? "Processing..." : "Unstake"}
-                        </button>
-                      </div>
-                    ) : null}
-                    {usdcEarned > BigInt(0) ? (
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
-                        <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
-                          {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleUsdcClaim}
-                          disabled={isBusy || isWrongChain}
-                          className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {pendingTxLabel === "Claim USDC rewards" ? "Processing..." : "Claim"}
+                          {pendingTxLabel === "USDC withdraw" ? "Processing..." : "Withdraw"}
                         </button>
                       </div>
                     ) : null}
                   </div>
-                ) : null}
-              </div>
+
+                  {rewards?.usdc?.address && (usdcShares > BigInt(0) || usdcStakedShares > BigInt(0) || usdcEarned > BigInt(0)) ? (
+                    <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                      {usdcShares > BigInt(0) ? (
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
+                          <input
+                            value={usdcStakeShares}
+                            onChange={(event) => setUsdcStakeShares(event.target.value)}
+                            placeholder="Shares"
+                            className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleUsdcStake}
+                            disabled={usdcStakeSharesWei === null || usdcStakeSharesWei > usdcShares || isBusy || isWrongChain}
+                            className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {pendingTxLabel === "Stake USDC shares" ? "Processing..." : "Stake"}
+                          </button>
+                        </div>
+                      ) : null}
+                      {usdcStakedShares > BigInt(0) ? (
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
+                          <input
+                            value={usdcUnstakeShares}
+                            onChange={(event) => setUsdcUnstakeShares(event.target.value)}
+                            placeholder="Shares"
+                            className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleUsdcUnstake}
+                            disabled={usdcUnstakeSharesWei === null || usdcUnstakeSharesWei > usdcStakedShares || isBusy || isWrongChain}
+                            className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {pendingTxLabel === "Unstake USDC shares" ? "Processing..." : "Unstake"}
+                          </button>
+                        </div>
+                      ) : null}
+                      {usdcEarned > BigInt(0) ? (
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
+                          <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
+                            {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleUsdcClaim}
+                            disabled={isBusy || isWrongChain}
+                            className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {pendingTxLabel === "Claim USDC rewards" ? "Processing..." : "Claim"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           ) : (
             <p className="mt-4 text-sm text-neutral-500">Connect a wallet to view your positions.</p>
