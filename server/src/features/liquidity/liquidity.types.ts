@@ -5,8 +5,10 @@ export type PoolSnapshot = {
   poolBalanceWei: string;
 };
 
-export type SecuredPoolSnapshot = PoolSnapshot & {
+export type Erc20PoolSnapshot = PoolSnapshot & {
   asset: `0x${string}`;
+  assetDecimals: number;
+  assetSymbol: string;
 };
 
 export type PoolPosition = {
@@ -32,6 +34,7 @@ export type RewardsSnapshot = {
 export type RewardsResponse = {
   native: RewardsSnapshot | null;
   secured: RewardsSnapshot | null;
+  usdc: RewardsSnapshot | null;
 };
 
 export type DepositQuote = {

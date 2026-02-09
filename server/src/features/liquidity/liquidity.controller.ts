@@ -6,16 +6,21 @@ import {
   getRewardsSnapshots,
   getSecuredPoolSnapshot,
   getSecuredPosition,
+  getUsdcPoolSnapshot,
+  getUsdcPosition,
   quoteNativeDeposit,
   quoteNativeWithdraw,
   quoteSecuredDeposit,
   quoteSecuredWithdraw,
+  quoteUsdcDeposit,
+  quoteUsdcWithdraw,
 } from "@/features/liquidity/liquidity.service.js";
 
 export async function getPools(_request: FastifyRequest, reply: FastifyReply) {
   const native = await getNativePoolSnapshot();
   const secured = await getSecuredPoolSnapshot();
-  return reply.send({ ok: true, data: { native, secured } });
+  const usdc = await getUsdcPoolSnapshot();
+  return reply.send({ ok: true, data: { native, secured, usdc } });
 }
 
 const rewardsQuerySchema = z.object({
@@ -44,6 +49,12 @@ export async function getSecuredLpPosition(request: FastifyRequest, reply: Fasti
   return reply.send({ ok: true, data });
 }
 
+export async function getUsdcLpPosition(request: FastifyRequest, reply: FastifyReply) {
+  const { account } = positionQuerySchema.parse(request.query);
+  const data = await getUsdcPosition(account as `0x${string}`);
+  return reply.send({ ok: true, data });
+}
+
 const depositQuoteSchema = z.object({
   amountWei: z.string().regex(/^\d+$/),
 });
@@ -60,6 +71,12 @@ export async function getSecuredDepositQuote(request: FastifyRequest, reply: Fas
   return reply.send({ ok: true, data });
 }
 
+export async function getUsdcDepositQuote(request: FastifyRequest, reply: FastifyReply) {
+  const { amountWei } = depositQuoteSchema.parse(request.query);
+  const data = await quoteUsdcDeposit(BigInt(amountWei));
+  return reply.send({ ok: true, data });
+}
+
 const withdrawQuoteSchema = z.object({
   shares: z.string().regex(/^\d+$/),
 });
@@ -73,5 +90,11 @@ export async function getNativeWithdrawQuote(request: FastifyRequest, reply: Fas
 export async function getSecuredWithdrawQuote(request: FastifyRequest, reply: FastifyReply) {
   const { shares } = withdrawQuoteSchema.parse(request.query);
   const data = await quoteSecuredWithdraw(BigInt(shares));
+  return reply.send({ ok: true, data });
+}
+
+export async function getUsdcWithdrawQuote(request: FastifyRequest, reply: FastifyReply) {
+  const { shares } = withdrawQuoteSchema.parse(request.query);
+  const data = await quoteUsdcWithdraw(BigInt(shares));
   return reply.send({ ok: true, data });
 }

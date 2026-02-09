@@ -9,6 +9,9 @@ import {
   getSecuredDepositQuote,
   getSecuredLpPosition,
   getSecuredWithdrawQuote,
+  getUsdcDepositQuote,
+  getUsdcLpPosition,
+  getUsdcWithdrawQuote,
 } from "@/features/liquidity/liquidity.controller.js";
 
 export function registerLiquidityRoutes(app: FastifyInstance) {
@@ -22,5 +25,11 @@ export function registerLiquidityRoutes(app: FastifyInstance) {
     app.get("/liquidity/secured/position", getSecuredLpPosition);
     app.get("/liquidity/secured/quote/deposit", getSecuredDepositQuote);
     app.get("/liquidity/secured/quote/withdraw", getSecuredWithdrawQuote);
+  }
+
+  if (env.USDC_POOL_ADDRESS) {
+    app.get("/liquidity/usdc/position", getUsdcLpPosition);
+    app.get("/liquidity/usdc/quote/deposit", getUsdcDepositQuote);
+    app.get("/liquidity/usdc/quote/withdraw", getUsdcWithdrawQuote);
   }
 }

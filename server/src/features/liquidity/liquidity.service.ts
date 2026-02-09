@@ -2,11 +2,11 @@ import { env } from "@/config/env.js";
 import { asAddress, publicClient } from "@/shared/viem.js";
 import type {
   DepositQuote,
+  Erc20PoolSnapshot,
   PoolPosition,
   PoolSnapshot,
   RewardsResponse,
   RewardsSnapshot,
-  SecuredPoolSnapshot,
   WithdrawQuote,
 } from "@/features/liquidity/liquidity.types.js";
 
@@ -80,6 +80,33 @@ const liquidityPoolAbi = [
     inputs: [],
     outputs: [{ type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+const erc20MetadataAbi = [
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "symbol",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "string" }],
+  },
+] as const;
+
+const erc20BalanceOfAbi = [
   {
     type: "function",
     name: "balanceOf",
@@ -199,38 +226,53 @@ export async function quoteNativeWithdraw(shares: bigint): Promise<WithdrawQuote
   return { shares: shares.toString(), amountWei: amountWei.toString() };
 }
 
-export async function getSecuredPoolSnapshot(): Promise<SecuredPoolSnapshot | null> {
-  if (!env.SECURED_POOL_ADDRESS) return null;
-  const pool = asAddress(env.SECURED_POOL_ADDRESS);
-  const erc20BalanceOfAbi = [
-    {
-      type: "function",
-      name: "balanceOf",
-      stateMutability: "view",
-      inputs: [{ name: "account", type: "address" }],
-      outputs: [{ type: "uint256" }],
-    },
-  ] as const;
+async function getErc20PoolSnapshot(pool: `0x${string}`): Promise<Erc20PoolSnapshot> {
   const asset = await publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "ASSET" });
-  const [totalAssets, totalOutstandingPrincipal, totalBalance] = await Promise.all([
+
+  const [totalAssets, totalOutstandingPrincipal, poolBalance, assetDecimals, assetSymbol] = await Promise.all([
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalAssets" }),
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalOutstandingPrincipal" }),
     publicClient.readContract({ address: asset, abi: erc20BalanceOfAbi, functionName: "balanceOf", args: [pool] }),
+    publicClient.readContract({ address: asset, abi: erc20MetadataAbi, functionName: "decimals" }).catch(() => 18),
+    publicClient.readContract({ address: asset, abi: erc20MetadataAbi, functionName: "symbol" }).catch(() => "TOKEN"),
   ]);
 
   return {
     address: pool,
     asset,
+    assetDecimals: Number(assetDecimals),
+    assetSymbol: String(assetSymbol),
     totalAssetsWei: totalAssets.toString(),
     totalOutstandingPrincipalWei: totalOutstandingPrincipal.toString(),
-    poolBalanceWei: totalBalance.toString(),
+    poolBalanceWei: poolBalance.toString(),
   };
+}
+
+export async function getSecuredPoolSnapshot(): Promise<Erc20PoolSnapshot | null> {
+  if (!env.SECURED_POOL_ADDRESS) return null;
+  const pool = asAddress(env.SECURED_POOL_ADDRESS);
+  return getErc20PoolSnapshot(pool);
+}
+
+export async function getUsdcPoolSnapshot(): Promise<Erc20PoolSnapshot | null> {
+  if (!env.USDC_POOL_ADDRESS) return null;
+  const pool = asAddress(env.USDC_POOL_ADDRESS);
+  return getErc20PoolSnapshot(pool);
 }
 
 export async function getSecuredPosition(account: `0x${string}`): Promise<PoolPosition> {
   if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
   const pool = asAddress(env.SECURED_POOL_ADDRESS);
+  return getErc20Position(pool, account);
+}
 
+export async function getUsdcPosition(account: `0x${string}`): Promise<PoolPosition> {
+  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
+  const pool = asAddress(env.USDC_POOL_ADDRESS);
+  return getErc20Position(pool, account);
+}
+
+async function getErc20Position(pool: `0x${string}`, account: `0x${string}`): Promise<PoolPosition> {
   const [shares, totalShares, totalAssets] = await Promise.all([
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "balanceOf", args: [account] }),
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalShares" }),
@@ -251,7 +293,28 @@ export async function getSecuredPosition(account: `0x${string}`): Promise<PoolPo
 export async function quoteSecuredDeposit(amountWei: bigint): Promise<DepositQuote> {
   if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
   const pool = asAddress(env.SECURED_POOL_ADDRESS);
+  return quoteErc20Deposit(pool, amountWei);
+}
 
+export async function quoteSecuredWithdraw(shares: bigint): Promise<WithdrawQuote> {
+  if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
+  const pool = asAddress(env.SECURED_POOL_ADDRESS);
+  return quoteErc20Withdraw(pool, shares);
+}
+
+export async function quoteUsdcDeposit(amountWei: bigint): Promise<DepositQuote> {
+  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
+  const pool = asAddress(env.USDC_POOL_ADDRESS);
+  return quoteErc20Deposit(pool, amountWei);
+}
+
+export async function quoteUsdcWithdraw(shares: bigint): Promise<WithdrawQuote> {
+  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
+  const pool = asAddress(env.USDC_POOL_ADDRESS);
+  return quoteErc20Withdraw(pool, shares);
+}
+
+async function quoteErc20Deposit(pool: `0x${string}`, amountWei: bigint): Promise<DepositQuote> {
   const [totalShares, totalAssets] = await Promise.all([
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalShares" }),
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalAssets" }),
@@ -261,10 +324,7 @@ export async function quoteSecuredDeposit(amountWei: bigint): Promise<DepositQuo
   return { amountWei: amountWei.toString(), shares: shares.toString() };
 }
 
-export async function quoteSecuredWithdraw(shares: bigint): Promise<WithdrawQuote> {
-  if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
-  const pool = asAddress(env.SECURED_POOL_ADDRESS);
-
+async function quoteErc20Withdraw(pool: `0x${string}`, shares: bigint): Promise<WithdrawQuote> {
   const [totalShares, totalAssets] = await Promise.all([
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalShares" }),
     publicClient.readContract({ address: pool, abi: liquidityPoolAbi, functionName: "totalAssets" }),
@@ -315,7 +375,10 @@ export async function getRewardsSnapshots(account?: `0x${string}`): Promise<Rewa
   const securedPromise = env.TABBY_SECURED_REWARDS_ADDRESS
     ? buildRewardsSnapshot(env.TABBY_SECURED_REWARDS_ADDRESS, account)
     : Promise.resolve(null);
+  const usdcPromise = env.TABBY_USDC_REWARDS_ADDRESS
+    ? buildRewardsSnapshot(env.TABBY_USDC_REWARDS_ADDRESS, account)
+    : Promise.resolve(null);
 
-  const [native, secured] = await Promise.all([nativePromise, securedPromise]);
-  return { native, secured };
+  const [native, secured, usdc] = await Promise.all([nativePromise, securedPromise, usdcPromise]);
+  return { native, secured, usdc };
 }
