@@ -254,21 +254,9 @@ export async function getSecuredPoolSnapshot(): Promise<Erc20PoolSnapshot | null
   return getErc20PoolSnapshot(pool);
 }
 
-export async function getUsdcPoolSnapshot(): Promise<Erc20PoolSnapshot | null> {
-  if (!env.USDC_POOL_ADDRESS) return null;
-  const pool = asAddress(env.USDC_POOL_ADDRESS);
-  return getErc20PoolSnapshot(pool);
-}
-
 export async function getSecuredPosition(account: `0x${string}`): Promise<PoolPosition> {
   if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
   const pool = asAddress(env.SECURED_POOL_ADDRESS);
-  return getErc20Position(pool, account);
-}
-
-export async function getUsdcPosition(account: `0x${string}`): Promise<PoolPosition> {
-  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
-  const pool = asAddress(env.USDC_POOL_ADDRESS);
   return getErc20Position(pool, account);
 }
 
@@ -299,18 +287,6 @@ export async function quoteSecuredDeposit(amountWei: bigint): Promise<DepositQuo
 export async function quoteSecuredWithdraw(shares: bigint): Promise<WithdrawQuote> {
   if (!env.SECURED_POOL_ADDRESS) throw new Error("secured-pool-not-configured");
   const pool = asAddress(env.SECURED_POOL_ADDRESS);
-  return quoteErc20Withdraw(pool, shares);
-}
-
-export async function quoteUsdcDeposit(amountWei: bigint): Promise<DepositQuote> {
-  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
-  const pool = asAddress(env.USDC_POOL_ADDRESS);
-  return quoteErc20Deposit(pool, amountWei);
-}
-
-export async function quoteUsdcWithdraw(shares: bigint): Promise<WithdrawQuote> {
-  if (!env.USDC_POOL_ADDRESS) throw new Error("usdc-pool-not-configured");
-  const pool = asAddress(env.USDC_POOL_ADDRESS);
   return quoteErc20Withdraw(pool, shares);
 }
 
@@ -375,10 +351,7 @@ export async function getRewardsSnapshots(account?: `0x${string}`): Promise<Rewa
   const securedPromise = env.TABBY_SECURED_REWARDS_ADDRESS
     ? buildRewardsSnapshot(env.TABBY_SECURED_REWARDS_ADDRESS, account)
     : Promise.resolve(null);
-  const usdcPromise = env.TABBY_USDC_REWARDS_ADDRESS
-    ? buildRewardsSnapshot(env.TABBY_USDC_REWARDS_ADDRESS, account)
-    : Promise.resolve(null);
 
-  const [native, secured, usdc] = await Promise.all([nativePromise, securedPromise, usdcPromise]);
-  return { native, secured, usdc };
+  const [native, secured] = await Promise.all([nativePromise, securedPromise]);
+  return { native, secured };
 }

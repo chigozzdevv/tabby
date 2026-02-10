@@ -61,7 +61,6 @@ type PoolsResponse = {
   data: {
     native: PoolSnapshot | null;
     secured: PoolSnapshot | null;
-    usdc: PoolSnapshot | null;
   };
 };
 
@@ -90,7 +89,6 @@ type RewardsResponse = {
   data: {
     native: RewardsSnapshot | null;
     secured: RewardsSnapshot | null;
-    usdc: RewardsSnapshot | null;
   };
 };
 
@@ -212,7 +210,6 @@ export default function PositionsClient() {
   const [poolData, setPoolData] = useState<PoolsResponse["data"] | null>(null);
   const [positionNative, setPositionNative] = useState<PositionResponse["data"] | null>(null);
   const [positionSecured, setPositionSecured] = useState<PositionResponse["data"] | null>(null);
-  const [positionUsdc, setPositionUsdc] = useState<PositionResponse["data"] | null>(null);
   const [rewards, setRewards] = useState<RewardsResponse["data"] | null>(null);
   const [loadingPools, setLoadingPools] = useState(false);
   const [loadingPositions, setLoadingPositions] = useState(false);
@@ -230,11 +227,6 @@ export default function PositionsClient() {
   const [securedWithdrawShares, setSecuredWithdrawShares] = useState("");
   const [securedStakeShares, setSecuredStakeShares] = useState("");
   const [securedUnstakeShares, setSecuredUnstakeShares] = useState("");
-
-  const [usdcDeposit, setUsdcDeposit] = useState("");
-  const [usdcWithdrawShares, setUsdcWithdrawShares] = useState("");
-  const [usdcStakeShares, setUsdcStakeShares] = useState("");
-  const [usdcUnstakeShares, setUsdcUnstakeShares] = useState("");
 
   const accountParam = useMemo(() => searchParams.get("account"), [searchParams]);
 
@@ -310,14 +302,12 @@ export default function PositionsClient() {
     Promise.all([
       fetch(`${API_BASE}/liquidity/native/position?account=${walletAddress}`).then((res) => res.json()),
       fetch(`${API_BASE}/liquidity/secured/position?account=${walletAddress}`).then((res) => res.json()).catch(() => null),
-      fetch(`${API_BASE}/liquidity/usdc/position?account=${walletAddress}`).then((res) => res.json()).catch(() => null),
       fetch(`${API_BASE}/liquidity/rewards?account=${walletAddress}`).then((res) => res.json()),
     ])
-      .then(([nativeRes, securedRes, usdcRes, rewardsRes]) => {
-        if (nativeRes?.ok) setPositionNative(nativeRes.data);
-        if (securedRes?.ok) setPositionSecured(securedRes.data);
-        if (usdcRes?.ok) setPositionUsdc(usdcRes.data);
-        if (rewardsRes?.ok) setRewards(rewardsRes.data);
+      .then(([nativeRes, securedRes, rewardsRes]) => {
+        setPositionNative(nativeRes?.ok ? nativeRes.data : null);
+        setPositionSecured(securedRes?.ok ? securedRes.data : null);
+        setRewards(rewardsRes?.ok ? rewardsRes.data : null);
       })
       .catch((err) => setLoadError(err instanceof Error ? err.message : "Failed to load positions"))
       .finally(() => setLoadingPositions(false));
@@ -350,19 +340,15 @@ export default function PositionsClient() {
     setLoadingPositions(true);
     setLoadError(null);
     try {
-      const [nativeRes, securedRes, usdcRes, rewardsRes] = await Promise.all([
+      const [nativeRes, securedRes, rewardsRes] = await Promise.all([
         fetch(`${API_BASE}/liquidity/native/position?account=${account}`).then((res) => res.json()),
         fetch(`${API_BASE}/liquidity/secured/position?account=${account}`)
-          .then((res) => res.json())
-          .catch(() => null),
-        fetch(`${API_BASE}/liquidity/usdc/position?account=${account}`)
           .then((res) => res.json())
           .catch(() => null),
         fetch(`${API_BASE}/liquidity/rewards?account=${account}`).then((res) => res.json()),
       ]);
       setPositionNative(nativeRes?.ok ? nativeRes.data : null);
       setPositionSecured(securedRes?.ok ? securedRes.data : null);
-      setPositionUsdc(usdcRes?.ok ? usdcRes.data : null);
       setRewards(rewardsRes?.ok ? rewardsRes.data : null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Failed to load positions");
@@ -622,133 +608,18 @@ export default function PositionsClient() {
     });
   };
 
-  const handleUsdcDeposit = async () => {
-    const usdcPool = poolData?.usdc;
-    if (!usdcPool?.asset) return;
-    const amount = usdcDeposit.trim();
-    if (!amount) return;
-    await runTx("USDC deposit", async () => {
-      const { walletClient, account } = await getWalletClient();
-      await ensureTargetChain(walletClient);
-      const assetDecimals = usdcPool.assetDecimals ?? 6;
-      const amountWei = parseUnits(amount, assetDecimals);
-      await walletClient.writeContract({
-        address: usdcPool.asset as Address,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [usdcPool.address as Address, amountWei],
-        account,
-      });
-      const hash = await walletClient.writeContract({
-        address: usdcPool.address as Address,
-        abi: securedPoolAbi,
-        functionName: "deposit",
-        args: [amountWei],
-        account,
-      });
-      setWalletAddress(account);
-      window.localStorage.setItem("tabby.walletAddress", account);
-      void refreshPositions(account);
-      return hash;
-    });
-  };
-
-  const handleUsdcWithdraw = async () => {
-    const usdcPool = poolData?.usdc;
-    if (!usdcPool) return;
-    const sharesInput = usdcWithdrawShares.trim();
-    if (!sharesInput) return;
-    await runTx("USDC withdraw", async () => {
-      const { walletClient, account } = await getWalletClient();
-      await ensureTargetChain(walletClient);
-      const shareDecimals = usdcPool.assetDecimals ?? 6;
-      const hash = await walletClient.writeContract({
-        address: usdcPool.address as Address,
-        abi: securedPoolAbi,
-        functionName: "withdraw",
-        args: [parseUnits(sharesInput, shareDecimals)],
-        account,
-      });
-      void refreshPositions(account);
-      return hash;
-    });
-  };
-
-  const handleUsdcStake = async () => {
-    const rewardsAddress = rewards?.usdc?.address;
-    if (!rewardsAddress) return;
-    const sharesInput = usdcStakeShares.trim();
-    if (!sharesInput) return;
-    await runTx("Stake USDC shares", async () => {
-      const { walletClient, account } = await getWalletClient();
-      await ensureTargetChain(walletClient);
-      const shareDecimals = poolData?.usdc?.assetDecimals ?? 6;
-      const hash = await walletClient.writeContract({
-        address: rewardsAddress as Address,
-        abi: rewardsAbi,
-        functionName: "stake",
-        args: [parseUnits(sharesInput, shareDecimals)],
-        account,
-      });
-      void refreshPositions(account);
-      return hash;
-    });
-  };
-
-  const handleUsdcUnstake = async () => {
-    const rewardsAddress = rewards?.usdc?.address;
-    if (!rewardsAddress) return;
-    const sharesInput = usdcUnstakeShares.trim();
-    if (!sharesInput) return;
-    await runTx("Unstake USDC shares", async () => {
-      const { walletClient, account } = await getWalletClient();
-      await ensureTargetChain(walletClient);
-      const shareDecimals = poolData?.usdc?.assetDecimals ?? 6;
-      const hash = await walletClient.writeContract({
-        address: rewardsAddress as Address,
-        abi: rewardsAbi,
-        functionName: "unstake",
-        args: [parseUnits(sharesInput, shareDecimals)],
-        account,
-      });
-      void refreshPositions(account);
-      return hash;
-    });
-  };
-
-  const handleUsdcClaim = async () => {
-    const rewardsAddress = rewards?.usdc?.address;
-    if (!rewardsAddress) return;
-    await runTx("Claim USDC rewards", async () => {
-      const { walletClient, account } = await getWalletClient();
-      await ensureTargetChain(walletClient);
-      const hash = await walletClient.writeContract({
-        address: rewardsAddress as Address,
-        abi: rewardsAbi,
-        functionName: "claim",
-        account,
-      });
-      void refreshPositions(account);
-      return hash;
-    });
-  };
-
   const utilization = formatPercent(poolData?.native?.totalOutstandingPrincipalWei, poolData?.native?.totalAssetsWei);
   const securedUtilization = formatPercent(
     poolData?.secured?.totalOutstandingPrincipalWei,
     poolData?.secured?.totalAssetsWei
   );
-  const usdcUtilization = formatPercent(poolData?.usdc?.totalOutstandingPrincipalWei, poolData?.usdc?.totalAssetsWei);
 
   const nativeShares = toBigIntOrZero(positionNative?.shares);
   const securedShares = toBigIntOrZero(positionSecured?.shares);
-  const usdcShares = toBigIntOrZero(positionUsdc?.shares);
   const nativeStakedShares = toBigIntOrZero(rewards?.native?.stakedShares);
   const securedStakedShares = toBigIntOrZero(rewards?.secured?.stakedShares);
-  const usdcStakedShares = toBigIntOrZero(rewards?.usdc?.stakedShares);
   const nativeEarned = toBigIntOrZero(rewards?.native?.earned);
   const securedEarned = toBigIntOrZero(rewards?.secured?.earned);
-  const usdcEarned = toBigIntOrZero(rewards?.usdc?.earned);
 
   const nativeDepositWei = parseEtherOrNull(nativeDeposit.trim());
   const nativeWithdrawSharesWei = parseUnitsOrNull(nativeWithdrawShares.trim(), 18);
@@ -761,17 +632,6 @@ export default function PositionsClient() {
   const securedWithdrawSharesWei = parseUnitsOrNull(securedWithdrawShares.trim(), securedDecimals);
   const securedStakeSharesWei = parseUnitsOrNull(securedStakeShares.trim(), securedDecimals);
   const securedUnstakeSharesWei = parseUnitsOrNull(securedUnstakeShares.trim(), securedDecimals);
-
-  const usdcDecimals = poolData?.usdc?.assetDecimals ?? 6;
-  const usdcSymbol = poolData?.usdc?.assetSymbol ?? "USDC";
-  const usdcDepositWei = parseUnitsOrNull(usdcDeposit.trim(), usdcDecimals);
-  const usdcWithdrawSharesWei = parseUnitsOrNull(usdcWithdrawShares.trim(), usdcDecimals);
-  const usdcStakeSharesWei = parseUnitsOrNull(usdcStakeShares.trim(), usdcDecimals);
-  const usdcUnstakeSharesWei = parseUnitsOrNull(usdcUnstakeShares.trim(), usdcDecimals);
-
-  const showUsdcPool = Boolean(poolData?.usdc);
-  const poolGridColsClass = showUsdcPool ? "lg:grid-cols-3" : "lg:grid-cols-2";
-  const positionGridColsClass = showUsdcPool ? "lg:grid-cols-3" : "lg:grid-cols-2";
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -812,7 +672,7 @@ export default function PositionsClient() {
           </div>
         </div>
 
-        <div className={`mt-10 grid gap-6 ${poolGridColsClass}`}>
+        <div className="mt-10 grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-white/10 bg-neutral-950/60 p-6">
             <div className="flex items-center justify-between">
               <div>
@@ -895,47 +755,6 @@ export default function PositionsClient() {
             )}
           </div>
 
-          {showUsdcPool ? (
-            <div className="rounded-3xl border border-white/10 bg-neutral-950/60 p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool</p>
-                  <h2 className="mt-2 text-xl font-semibold text-white">{usdcSymbol} liquidity</h2>
-                </div>
-                <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-neutral-400">
-                  {poolData?.usdc ? "Active" : "Not configured"}
-                </span>
-              </div>
-              {loadingPools ? (
-                <p className="mt-4 text-sm text-neutral-400">Loading pool data…</p>
-              ) : poolData?.usdc ? (
-                <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Total assets</p>
-                    <p className="mt-2 text-sm font-semibold text-white">
-                      {formatAmount(poolData.usdc.totalAssetsWei, usdcDecimals, usdcSymbol)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Pool balance</p>
-                    <p className="mt-2 text-sm font-semibold text-white">
-                      {formatAmount(poolData.usdc.poolBalanceWei, usdcDecimals, usdcSymbol)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Outstanding</p>
-                    <p className="mt-2 text-sm font-semibold text-white">
-                      {formatAmount(poolData.usdc.totalOutstandingPrincipalWei, usdcDecimals, usdcSymbol)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Utilization</p>
-                    <p className="mt-2 text-sm font-semibold text-white">{usdcUtilization}</p>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
         </div>
 
         <div className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-6 sm:p-8">
@@ -947,7 +766,7 @@ export default function PositionsClient() {
             {loadingPositions ? <span className="text-xs text-neutral-400">Refreshing…</span> : null}
           </div>
           {walletAddress ? (
-            <div className={`mt-6 grid gap-6 ${positionGridColsClass}`}>
+            <div className="mt-6 grid gap-6 lg:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
                 <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">Native pool position</p>
                 {positionNative ? (
@@ -1239,140 +1058,6 @@ export default function PositionsClient() {
                   </div>
                 ) : null}
               </div>
-
-              {showUsdcPool ? (
-                <div className="rounded-2xl border border-white/10 bg-neutral-950/70 p-5">
-                  <p className="text-xs uppercase tracking-[0.3em] text-neutral-500">USDC pool position</p>
-                  {positionUsdc ? (
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Shares</p>
-                        <p className="mt-2 text-sm font-semibold text-white">
-                          {formatUnitsCompact(positionUsdc.shares, usdcDecimals)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Estimated assets</p>
-                        <p className="mt-2 text-sm font-semibold text-white">
-                          {formatAmount(positionUsdc.estimatedAssetsWei, usdcDecimals, usdcSymbol)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Share of pool</p>
-                        <p className="mt-2 text-sm font-semibold text-white">
-                          {formatPercent(positionUsdc.shares, positionUsdc.totalShares)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Earned rewards</p>
-                        <p className="mt-2 text-sm font-semibold text-white">
-                          {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="mt-4 text-sm text-neutral-500">No USDC position found.</p>
-                  )}
-
-                  <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Deposit {usdcSymbol}</p>
-                      <input
-                        value={usdcDeposit}
-                        onChange={(event) => setUsdcDeposit(event.target.value)}
-                        placeholder="0.0"
-                        className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleUsdcDeposit}
-                        disabled={usdcDepositWei === null || !poolData?.usdc?.asset || isBusy || isWrongChain}
-                        className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {pendingTxLabel === "USDC deposit" ? "Processing..." : "Approve + Deposit"}
-                      </button>
-                    </div>
-                    {usdcShares > BigInt(0) ? (
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Withdraw shares</p>
-                        <input
-                          value={usdcWithdrawShares}
-                          onChange={(event) => setUsdcWithdrawShares(event.target.value)}
-                          placeholder="Shares"
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleUsdcWithdraw}
-                          disabled={usdcWithdrawSharesWei === null || usdcWithdrawSharesWei > usdcShares || isBusy || isWrongChain}
-                          className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {pendingTxLabel === "USDC withdraw" ? "Processing..." : "Withdraw"}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {rewards?.usdc?.address && (usdcShares > BigInt(0) || usdcStakedShares > BigInt(0) || usdcEarned > BigInt(0)) ? (
-                    <div className="mt-6 grid gap-4 sm:grid-cols-3">
-                      {usdcShares > BigInt(0) ? (
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Stake shares</p>
-                          <input
-                            value={usdcStakeShares}
-                            onChange={(event) => setUsdcStakeShares(event.target.value)}
-                            placeholder="Shares"
-                            className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleUsdcStake}
-                            disabled={usdcStakeSharesWei === null || usdcStakeSharesWei > usdcShares || isBusy || isWrongChain}
-                            className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {pendingTxLabel === "Stake USDC shares" ? "Processing..." : "Stake"}
-                          </button>
-                        </div>
-                      ) : null}
-                      {usdcStakedShares > BigInt(0) ? (
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Unstake shares</p>
-                          <input
-                            value={usdcUnstakeShares}
-                            onChange={(event) => setUsdcUnstakeShares(event.target.value)}
-                            placeholder="Shares"
-                            className="mt-2 w-full rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-100 focus:border-white/40 focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleUsdcUnstake}
-                            disabled={usdcUnstakeSharesWei === null || usdcUnstakeSharesWei > usdcStakedShares || isBusy || isWrongChain}
-                            className="mt-3 w-full rounded-full border border-white/20 px-4 py-2 text-xs font-semibold text-white transition hover:border-white/50 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {pendingTxLabel === "Unstake USDC shares" ? "Processing..." : "Unstake"}
-                          </button>
-                        </div>
-                      ) : null}
-                      {usdcEarned > BigInt(0) ? (
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Claim TABBY</p>
-                          <div className="mt-2 rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2 text-sm text-neutral-200">
-                            {formatAmount(rewards?.usdc?.earned, 18, "TABBY")}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleUsdcClaim}
-                            disabled={isBusy || isWrongChain}
-                            className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {pendingTxLabel === "Claim USDC rewards" ? "Processing..." : "Claim"}
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
           ) : (
             <p className="mt-4 text-sm text-neutral-500">Connect a wallet to view your positions.</p>

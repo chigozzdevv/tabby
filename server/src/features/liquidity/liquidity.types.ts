@@ -34,7 +34,6 @@ export type RewardsSnapshot = {
 export type RewardsResponse = {
   native: RewardsSnapshot | null;
   secured: RewardsSnapshot | null;
-  usdc: RewardsSnapshot | null;
 };
 
 export type DepositQuote = {
