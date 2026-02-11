@@ -155,16 +155,20 @@ export default function DashboardPage() {
         if (cancelled) return;
 
         const eventTxByTypeAndLoan = new Map<string, `0x${string}`>();
+        const eventTxByLoan = new Map<number, `0x${string}`>();
         const gasLoanIds: number[] = [];
         const securedLoanIds: number[] = [];
 
         for (const evt of allEvents) {
           if (typeof evt.loanId === "number" && evt.loanId > 0) {
-            if (evt.type === "gas-loan.executed") gasLoanIds.push(evt.loanId);
-            if (evt.type === "secured-loan.opened") securedLoanIds.push(evt.loanId);
+            if (evt.type.startsWith("gas-loan.")) gasLoanIds.push(evt.loanId);
+            if (evt.type.startsWith("secured-loan.")) securedLoanIds.push(evt.loanId);
           }
           if (evt.txHash && typeof evt.loanId === "number" && evt.loanId > 0) {
             eventTxByTypeAndLoan.set(`${evt.type}:${evt.loanId}`, evt.txHash);
+            if (!eventTxByLoan.has(evt.loanId)) {
+              eventTxByLoan.set(evt.loanId, evt.txHash);
+            }
           }
         }
 
@@ -179,7 +183,7 @@ export default function DashboardPage() {
               if (!detail.offer?.txHash) {
                 detail.offer = {
                   ...(detail.offer ?? {}),
-                  txHash: eventTxByTypeAndLoan.get(`gas-loan.executed:${loanId}`),
+                  txHash: eventTxByTypeAndLoan.get(`gas-loan.executed:${loanId}`) ?? eventTxByLoan.get(loanId),
                 };
               }
               return { loanId, detail };
@@ -273,6 +277,19 @@ export default function DashboardPage() {
   const gasOutstanding = pendingLoans.filter((l) => l.kind === "gas").length;
   const securedOutstanding = pendingLoans.filter((l) => l.kind === "secured").length;
 
+  const trackedGasIds = new Set(
+    events
+      .filter((e) => typeof e.loanId === "number" && e.loanId > 0 && e.type.startsWith("gas-loan."))
+      .map((e) => e.loanId as number)
+  );
+  const trackedSecuredIds = new Set(
+    events
+      .filter((e) => typeof e.loanId === "number" && e.loanId > 0 && e.type.startsWith("secured-loan."))
+      .map((e) => e.loanId as number)
+  );
+  const trackedGasCount = trackedGasIds.size;
+  const trackedSecuredCount = trackedSecuredIds.size;
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
@@ -312,7 +329,10 @@ export default function DashboardPage() {
           </div>
           <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
             <p className="text-xs uppercase tracking-[0.16em] text-neutral-300">Tracked Loan Mix</p>
-            <p className="mt-2 text-lg font-semibold text-white">{gasOutstanding} gas / {securedOutstanding} secured</p>
+            <p className="mt-2 text-lg font-semibold text-white">{trackedGasCount} gas / {trackedSecuredCount} secured</p>
+            <p className="mt-1 text-xs text-neutral-400">
+              Outstanding: {gasOutstanding} gas / {securedOutstanding} secured
+            </p>
           </div>
         </section>
 
