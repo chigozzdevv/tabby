@@ -15,6 +15,9 @@ const authQuerySchema = z.object({
       "gas-loan.executed",
       "gas-loan.repaid",
       "gas-loan.defaulted",
+      "secured-loan.opened",
+      "secured-loan.repaid",
+      "secured-loan.collateral-withdrawn",
     ])
     .optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -33,6 +36,9 @@ const publicQuerySchema = z.object({
       "gas-loan.executed",
       "gas-loan.repaid",
       "gas-loan.defaulted",
+      "secured-loan.opened",
+      "secured-loan.repaid",
+      "secured-loan.collateral-withdrawn",
     ])
     .optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),

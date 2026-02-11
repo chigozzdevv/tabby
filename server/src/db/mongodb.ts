@@ -21,6 +21,9 @@ export async function connectMongo(): Promise<Db> {
     db.collection("activity-events").createIndex({ loanId: 1, createdAt: -1 }),
     db.collection("activity-events").createIndex({ createdAt: -1 }),
     db.collection("activity-cursors").createIndex({ key: 1 }, { unique: true }),
+    db.collection("secured-loan-position-links").createIndex({ positionId: 1 }, { unique: true }),
+    db.collection("secured-loan-position-links").createIndex({ loanId: 1 }),
+    db.collection("secured-loan-position-links").createIndex({ borrower: 1 }),
   ]);
   logger.info({ db: env.MONGODB_DB }, "mongodb-connected");
   return db;

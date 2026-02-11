@@ -10,6 +10,8 @@ export default function LandingHeader() {
 
   const shortTokenAddress =
     tokenAddress.length > 12 ? `${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)}` : tokenAddress;
+  const desktopTokenAddress =
+    tokenAddress.length > 16 ? `${tokenAddress.slice(0, 8)}...${tokenAddress.slice(-6)}` : tokenAddress;
 
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 8);
@@ -37,6 +39,12 @@ export default function LandingHeader() {
           />
         </Link>
         <div className="flex min-w-0 items-center gap-3 text-xs text-neutral-300">
+          <Link
+            href="/dashboard"
+            className="rounded-full border border-white/10 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-neutral-300 transition hover:border-white/40 hover:text-white"
+          >
+            Dashboard
+          </Link>
           <span className="hidden uppercase tracking-[0.2em] text-neutral-400 sm:inline">$Tabby</span>
           <a
             href={tokenExplorerUrl}
@@ -46,7 +54,7 @@ export default function LandingHeader() {
             aria-label="View $TABBY token on explorer"
           >
             <span className="truncate sm:hidden">{shortTokenAddress}</span>
-            <span className="hidden sm:inline">{tokenAddress}</span>
+            <span className="hidden sm:inline">{desktopTokenAddress}</span>
             <svg
               viewBox="0 0 20 20"
               className="h-3 w-3 text-neutral-400 transition group-hover:text-white"

@@ -9,6 +9,7 @@ import type {
   GasLoanOfferSummary,
   PublicGasLoanDetails,
   PublicGasLoanNextDue,
+  PublicSecuredLoanDetails,
 } from "@/features/monitoring/monitoring.types.js";
 
 const listQuerySchema = z.object({
@@ -44,6 +45,42 @@ const agentLoanManagerAbi = [
   {
     type: "function",
     name: "outstanding",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+const securedLoanManagerAbi = [
+  {
+    type: "function",
+    name: "loans",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      { name: "borrower", type: "address" },
+      { name: "asset", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "interestBps", type: "uint256" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "openedAt", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+      { name: "lastAccruedAt", type: "uint256" },
+      { name: "accruedInterest", type: "uint256" },
+      { name: "closed", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "outstanding",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "loanPositions",
     stateMutability: "view",
     inputs: [{ name: "loanId", type: "uint256" }],
     outputs: [{ type: "uint256" }],
@@ -130,6 +167,54 @@ async function getOnchainGasLoanState(loanId: number) {
   };
 }
 
+async function getOnchainSecuredLoanState(loanId: number) {
+  if (!env.LOAN_MANAGER_ADDRESS) {
+    throw new HttpError(503, "secured-loans-unavailable", "LOAN_MANAGER_ADDRESS not configured");
+  }
+
+  const loanManager = asAddress(env.LOAN_MANAGER_ADDRESS);
+  const id = BigInt(loanId);
+
+  const [state, outstanding, positionIdRaw] = await Promise.all([
+    publicClient.readContract({ address: loanManager, abi: securedLoanManagerAbi, functionName: "loans", args: [id] }),
+    publicClient.readContract({ address: loanManager, abi: securedLoanManagerAbi, functionName: "outstanding", args: [id] }),
+    publicClient.readContract({ address: loanManager, abi: securedLoanManagerAbi, functionName: "loanPositions", args: [id] }),
+  ]);
+
+  const [
+    borrower,
+    asset,
+    principal,
+    interestBps,
+    collateralAsset,
+    collateralAmount,
+    openedAt,
+    dueAt,
+    lastAccruedAt,
+    accruedInterest,
+    closed,
+  ] = state;
+
+  const positionId = Number(positionIdRaw);
+
+  return {
+    loanId,
+    positionId: Number.isFinite(positionId) && positionId > 0 ? positionId : undefined,
+    borrower,
+    asset,
+    principalWei: principal.toString(),
+    interestBps: Number(interestBps),
+    collateralAsset,
+    collateralAmountWei: collateralAmount.toString(),
+    openedAt: Number(openedAt),
+    dueAt: Number(dueAt),
+    lastAccruedAt: Number(lastAccruedAt),
+    accruedInterestWei: accruedInterest.toString(),
+    closed,
+    outstandingWei: outstanding.toString(),
+  };
+}
+
 export async function getGasLoanDetails(agentId: string, loanId: number): Promise<GasLoanDetails> {
   if (!Number.isInteger(loanId) || loanId <= 0) throw new HttpError(400, "invalid-loan-id", "loanId must be a positive integer");
 
@@ -153,6 +238,12 @@ export async function getPublicGasLoanDetails(loanId: number): Promise<PublicGas
   const onchain = await getOnchainGasLoanState(loanId);
 
   return { offer, onchain };
+}
+
+export async function getPublicSecuredLoanDetails(loanId: number): Promise<PublicSecuredLoanDetails> {
+  if (!Number.isInteger(loanId) || loanId <= 0) throw new HttpError(400, "invalid-loan-id", "loanId must be a positive integer");
+  const onchain = await getOnchainSecuredLoanState(loanId);
+  return { onchain };
 }
 
 export async function getPublicNextDue(borrower: string): Promise<PublicGasLoanNextDue | null> {

@@ -6,6 +6,7 @@ import {
   getPublicGasLoanById,
   getPublicGasLoans,
   getPublicNextDueGasLoan,
+  getPublicSecuredLoanById,
 } from "@/features/monitoring/monitoring.controller.js";
 
 export function registerMonitoringRoutes(app: FastifyInstance) {
@@ -15,4 +16,5 @@ export function registerMonitoringRoutes(app: FastifyInstance) {
   app.get("/public/monitoring/gas-loans", getPublicGasLoans);
   app.get("/public/monitoring/gas-loans/next-due", getPublicNextDueGasLoan);
   app.get("/public/monitoring/gas-loans/:loanId", getPublicGasLoanById);
+  app.get("/public/monitoring/secured-loans/:loanId", getPublicSecuredLoanById);
 }

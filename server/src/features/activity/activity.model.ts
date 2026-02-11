@@ -5,7 +5,10 @@ export type ActivityEventType =
   | "gas-loan.offer-canceled"
   | "gas-loan.executed"
   | "gas-loan.repaid"
-  | "gas-loan.defaulted";
+  | "gas-loan.defaulted"
+  | "secured-loan.opened"
+  | "secured-loan.repaid"
+  | "secured-loan.collateral-withdrawn";
 
 export type ActivityEventDoc = {
   chainId: number;

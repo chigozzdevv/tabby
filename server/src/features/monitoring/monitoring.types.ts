@@ -54,3 +54,22 @@ export type PublicGasLoanNextDue = {
   dueInSeconds: number;
   outstandingWei: string;
 };
+
+export type PublicSecuredLoanDetails = {
+  onchain: {
+    loanId: number;
+    positionId?: number;
+    borrower: `0x${string}`;
+    asset: `0x${string}`;
+    principalWei: string;
+    interestBps: number;
+    collateralAsset: `0x${string}`;
+    collateralAmountWei: string;
+    openedAt: number;
+    dueAt: number;
+    lastAccruedAt: number;
+    accruedInterestWei: string;
+    closed: boolean;
+    outstandingWei: string;
+  };
+};

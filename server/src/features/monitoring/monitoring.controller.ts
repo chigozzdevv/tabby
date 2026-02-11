@@ -5,6 +5,7 @@ import {
   getGasLoanDetails,
   getPublicGasLoanDetails,
   getPublicNextDue,
+  getPublicSecuredLoanDetails,
   listGasLoans,
   listPublicGasLoans,
 } from "@/features/monitoring/monitoring.service.js";
@@ -32,6 +33,12 @@ export async function getPublicGasLoans(request: FastifyRequest, reply: FastifyR
 export async function getPublicGasLoanById(request: FastifyRequest, reply: FastifyReply) {
   const { loanId } = loanIdParamsSchema.parse(request.params);
   const data = await getPublicGasLoanDetails(loanId);
+  return reply.send({ ok: true, data });
+}
+
+export async function getPublicSecuredLoanById(request: FastifyRequest, reply: FastifyReply) {
+  const { loanId } = loanIdParamsSchema.parse(request.params);
+  const data = await getPublicSecuredLoanDetails(loanId);
   return reply.send({ ok: true, data });
 }
 
