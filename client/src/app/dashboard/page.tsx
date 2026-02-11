@@ -5,7 +5,7 @@ import LandingHeader from "../landing/header";
 import LandingFooter from "../landing/footer";
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash").replace(/\/$/, "");
-const MONADSCAN_BASE = (process.env.NEXT_PUBLIC_MONADSCAN_BASE_URL ?? "https://monadscan.io").replace(/\/$/, "");
+const MONADSCAN_BASE = (process.env.NEXT_PUBLIC_MONADSCAN_BASE_URL ?? "https://monadscan.com").replace(/\/$/, "");
 const MAX_GAS_LOAN_LOOKUP = 30;
 const MAX_SECURED_LOAN_LOOKUP = 30;
 
@@ -300,7 +300,7 @@ export default function DashboardPage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-400">Tabby Monitor</p>
-              <h1 className="mt-2 text-3xl font-semibold text-white sm:text-4xl">Loan Activity Dashboard</h1>
+              <h1 className="mt-2 text-3xl font-semibold text-white sm:text-4xl">Loan Activity</h1>
             </div>
             <div className="rounded-full border border-white/15 bg-black/30 px-4 py-2 text-xs text-neutral-300">
               {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Connecting..."}
