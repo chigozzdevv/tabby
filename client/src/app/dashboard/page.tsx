@@ -6,8 +6,8 @@ import LandingFooter from "../landing/footer";
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_TABBY_API_BASE_URL ?? "https://api.tabby.cash").replace(/\/$/, "");
 const MONADSCAN_BASE = (process.env.NEXT_PUBLIC_MONADSCAN_BASE_URL ?? "https://monadscan.com").replace(/\/$/, "");
-const MAX_GAS_LOAN_LOOKUP = 30;
-const MAX_SECURED_LOAN_LOOKUP = 30;
+const MAX_GAS_LOAN_LOOKUP = 50;
+const MAX_SECURED_LOAN_LOOKUP = 50;
 
 type ActivityEvent = {
   agentId?: string;
@@ -114,9 +114,9 @@ function formatDue(dueAt: number) {
 }
 
 function statusTone(status: LoanStatus) {
-  if (status === "defaulted" || status === "overdue") return "bg-orange-500/15 text-orange-200 ring-1 ring-orange-400/30";
-  if (status === "closed") return "bg-neutral-700/40 text-neutral-200 ring-1 ring-neutral-500/40";
-  return "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-400/30";
+  if (status === "defaulted" || status === "overdue") return "bg-red-500/10 text-red-200 border-red-400/30";
+  if (status === "closed") return "bg-neutral-700/40 text-neutral-200 border-neutral-500/40";
+  return "bg-emerald-500/10 text-emerald-200 border-emerald-400/30";
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -144,6 +144,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [activityFilter, setActivityFilter] = useState<"all" | "gas" | "secured">("all");
+  const [borrowerFilter, setBorrowerFilter] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
@@ -262,20 +264,44 @@ export default function DashboardPage() {
       });
     }
 
-    return rows
-      .filter((row) => row.loanId > 0)
-      .sort((a, b) => {
-        if (a.status === "overdue" && b.status !== "overdue") return -1;
-        if (b.status === "overdue" && a.status !== "overdue") return 1;
-        return a.dueAt - b.dueAt;
-      });
+    return rows.filter((row) => row.loanId > 0);
   }, [gasLoans, securedLoans]);
 
-  const pendingLoans = loans.filter((l) => BigInt(l.outstandingWei) > BigInt(0) && l.status !== "closed");
-  const overdueCount = pendingLoans.filter((l) => l.status === "overdue" || l.status === "defaulted").length;
-  const activeCount = pendingLoans.filter((l) => l.status === "active").length;
+  const allLoans = useMemo(() => {
+    return loans.sort((a, b) => {
+      if (a.status === "overdue" && b.status !== "overdue") return -1;
+      if (b.status === "overdue" && a.status !== "overdue") return 1;
+      return a.dueAt - b.dueAt;
+    });
+  }, [loans]);
+
+  const pendingLoans = allLoans.filter((l) => BigInt(l.outstandingWei) > BigInt(0) && l.status !== "closed");
+  const closedLoans = allLoans.filter((l) => l.status === "closed");
+  const overdueCount = allLoans.filter((l) => l.status === "overdue" || l.status === "defaulted").length;
+  const activeCount = allLoans.filter((l) => l.status === "active").length;
   const gasOutstanding = pendingLoans.filter((l) => l.kind === "gas").length;
   const securedOutstanding = pendingLoans.filter((l) => l.kind === "secured").length;
+
+  const totalOutstandingMON = useMemo(() => {
+    return pendingLoans.reduce((sum, loan) => sum + BigInt(loan.outstandingWei), BigInt(0));
+  }, [pendingLoans]);
+
+  const filteredEvents = useMemo(() => {
+    let filtered = events;
+    
+    if (activityFilter === "gas") {
+      filtered = filtered.filter((e) => e.type.startsWith("gas-loan."));
+    } else if (activityFilter === "secured") {
+      filtered = filtered.filter((e) => e.type.startsWith("secured-loan."));
+    }
+    
+    if (borrowerFilter.trim()) {
+      const search = borrowerFilter.toLowerCase().trim();
+      filtered = filtered.filter((e) => e.borrower?.toLowerCase().includes(search));
+    }
+    
+    return filtered;
+  }, [events, activityFilter, borrowerFilter]);
 
   const trackedGasIds = new Set(
     events
@@ -294,18 +320,10 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <LandingHeader />
       <main className="relative mx-auto w-full max-w-[1440px] px-6 pb-20 pt-10">
-        <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[380px] bg-[radial-gradient(circle_at_15%_10%,rgba(249,115,22,0.22),transparent_45%),radial-gradient(circle_at_85%_0%,rgba(45,212,191,0.16),transparent_45%)]" />
-
-        <section className="mb-8 overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-400">Tabby Monitor</p>
-              <h1 className="mt-2 text-3xl font-semibold text-white sm:text-4xl">Loan Activity</h1>
-            </div>
-            <div className="rounded-full border border-white/15 bg-black/30 px-4 py-2 text-xs text-neutral-300">
-              {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Connecting..."}
-            </div>
-          </div>
+        <section className="mb-10">
+          <p className="text-sm text-neutral-400">
+            {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : "Loading..."}
+          </p>
         </section>
 
         {error ? (
@@ -314,48 +332,50 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-2xl border border-orange-400/30 bg-orange-500/10 p-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-orange-100/80">Yet To Repay</p>
-            <p className="mt-2 text-3xl font-semibold text-orange-100">{pendingLoans.length}</p>
+        <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <p className="text-xs uppercase tracking-wider text-neutral-400">Total Loans</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{allLoans.length}</p>
           </div>
-          <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-red-100/80">Overdue Risk</p>
-            <p className="mt-2 text-3xl font-semibold text-red-100">{overdueCount}</p>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <p className="text-xs uppercase tracking-wider text-neutral-400">Outstanding</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{pendingLoans.length}</p>
+            <p className="mt-1 font-mono text-xs text-neutral-400">{formatTokenAmount(totalOutstandingMON.toString())} MON</p>
           </div>
-          <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-emerald-100/80">Active Healthy</p>
-            <p className="mt-2 text-3xl font-semibold text-emerald-100">{activeCount}</p>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <p className="text-xs uppercase tracking-wider text-neutral-400">Active</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{activeCount}</p>
           </div>
-          <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-neutral-300">Tracked Loan Mix</p>
-            <p className="mt-2 text-lg font-semibold text-white">{trackedGasCount} gas / {trackedSecuredCount} secured</p>
-            <p className="mt-1 text-xs text-neutral-400">
-              Outstanding: {gasOutstanding} gas / {securedOutstanding} secured
-            </p>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <p className="text-xs uppercase tracking-wider text-neutral-400">Overdue</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{overdueCount}</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <p className="text-xs uppercase tracking-wider text-neutral-400">Repaid</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{closedLoans.length}</p>
           </div>
         </section>
 
         <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/5">
             <div className="border-b border-white/10 px-5 py-4">
-              <h2 className="text-lg font-semibold text-white">Repayment Board</h2>
+              <h2 className="text-lg font-semibold text-white">All Loans</h2>
             </div>
             {loading ? (
-              <p className="px-5 py-6 text-sm text-neutral-300">Loading loans...</p>
-            ) : pendingLoans.length === 0 ? (
-              <p className="px-5 py-6 text-sm text-neutral-300">No outstanding loans in current tracked set.</p>
+              <p className="px-5 py-6 text-sm text-neutral-300">Loading...</p>
+            ) : allLoans.length === 0 ? (
+              <p className="px-5 py-6 text-sm text-neutral-300">No loans yet.</p>
             ) : (
-              <div className="divide-y divide-white/10">
-                {pendingLoans.map((loan) => (
+              <div className="max-h-[680px] overflow-auto divide-y divide-white/10">
+                {allLoans.map((loan) => (
                   <div key={loan.key} className="px-5 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-black/30 px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-neutral-300">
+                        <span className="rounded-full bg-white/10 px-2 py-1 text-[11px] uppercase tracking-wider text-neutral-300">
                           {loan.kind}
                         </span>
-                        <span className="font-mono text-sm text-white">Loan #{loan.loanId}</span>
-                        <span className={`rounded-full px-2 py-1 text-[11px] ${statusTone(loan.status)}`}>{loan.status}</span>
+                        <span className="font-mono text-sm text-white">#{loan.loanId}</span>
+                        <span className={`rounded-full border px-2 py-1 text-[11px] ${statusTone(loan.status)}`}>{loan.status}</span>
                       </div>
                       {loan.txHash ? (
                         <a
@@ -364,13 +384,13 @@ export default function DashboardPage() {
                           rel="noreferrer"
                           className="font-mono text-xs text-neutral-300 underline decoration-white/20 underline-offset-4 hover:text-white hover:decoration-white/70"
                         >
-                          tx {shortHex(loan.txHash)}
+                          {shortHex(loan.txHash)}
                         </a>
                       ) : null}
                     </div>
                     <div className="mt-3 grid gap-3 text-sm text-neutral-300 sm:grid-cols-3">
                       <div>
-                        <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">Borrower</p>
+                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Borrower</p>
                         <a
                           href={`${MONADSCAN_BASE}/address/${loan.borrower}`}
                           target="_blank"
@@ -381,11 +401,11 @@ export default function DashboardPage() {
                         </a>
                       </div>
                       <div>
-                        <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">Due</p>
+                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Due</p>
                         <p>{formatDue(loan.dueAt)}</p>
                       </div>
                       <div>
-                        <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">Outstanding</p>
+                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Outstanding</p>
                         <p className="font-mono text-neutral-100">{formatTokenAmount(loan.outstandingWei)} MON</p>
                       </div>
                     </div>
@@ -396,42 +416,82 @@ export default function DashboardPage() {
           </div>
 
           <div className="overflow-hidden rounded-3xl border border-white/10 bg-[#080b10]">
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-              <div className="flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
-                <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/80" />
+            <div className="border-b border-white/10 px-4 py-3">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-300/80" />
+                </div>
+                <h2 className="text-sm font-medium text-emerald-50/90">Activity</h2>
               </div>
-              <h2 className="text-sm font-medium text-emerald-100/90">Activity Stream</h2>
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setActivityFilter("all")}
+                    className={`rounded-lg px-3 py-1.5 text-xs transition ${
+                      activityFilter === "all"
+                        ? "bg-white/10 text-white"
+                        : "bg-white/5 text-neutral-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    onClick={() => setActivityFilter("gas")}
+                    className={`rounded-lg px-3 py-1.5 text-xs transition ${
+                      activityFilter === "gas"
+                        ? "bg-white/10 text-white"
+                        : "bg-white/5 text-neutral-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    Gas
+                  </button>
+                  <button
+                    onClick={() => setActivityFilter("secured")}
+                    className={`rounded-lg px-3 py-1.5 text-xs transition ${
+                      activityFilter === "secured"
+                        ? "bg-white/10 text-white"
+                        : "bg-white/5 text-neutral-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    Secured
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Filter by borrower address..."
+                  value={borrowerFilter}
+                  onChange={(e) => setBorrowerFilter(e.target.value)}
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white placeholder:text-neutral-500 focus:border-white/30 focus:outline-none"
+                />
+              </div>
             </div>
-            {events.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-neutral-300">No activity yet.</p>
+            {filteredEvents.length === 0 ? (
+              <p className="px-4 py-6 text-sm text-neutral-300">No activity matching filters.</p>
             ) : (
               <div className="max-h-[680px] overflow-auto p-3">
                 <div className="space-y-2">
-                  {events.slice(0, 40).map((event) => (
+                  {filteredEvents.slice(0, 40).map((event) => (
                     <div
                       key={`${event.createdAt}-${event.type}-${event.loanId ?? "x"}`}
                       className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-xs text-neutral-300"
                     >
-                      <div className="mb-1 flex items-center justify-between gap-2">
-                        <span className="font-mono text-[11px] text-neutral-500">
-                          {new Date(event.createdAt).toLocaleTimeString()}
-                        </span>
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-sm text-emerald-50/90">{EVENT_LABELS[event.type] ?? event.type}</p>
                         {typeof event.loanId === "number" ? (
                           <span className="font-mono text-[11px] text-neutral-400">#{event.loanId}</span>
                         ) : null}
                       </div>
-                      <p className="text-sm text-emerald-100">{EVENT_LABELS[event.type] ?? event.type}</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                         {event.borrower ? (
                           <a
                             href={`${MONADSCAN_BASE}/address/${event.borrower}`}
                             target="_blank"
                             rel="noreferrer"
-                            className="font-mono text-[11px] underline decoration-white/20 underline-offset-4 hover:text-white hover:decoration-white/70"
+                            className="font-mono text-[11px] underline decoration-emerald-200/30 underline-offset-4 hover:text-white hover:decoration-emerald-200"
                           >
-                            {shortHex(event.borrower)}
+                            borrower={shortHex(event.borrower)}
                           </a>
                         ) : null}
                         {event.txHash ? (
@@ -439,11 +499,14 @@ export default function DashboardPage() {
                             href={`${MONADSCAN_BASE}/tx/${event.txHash}`}
                             target="_blank"
                             rel="noreferrer"
-                            className="font-mono text-[11px] underline decoration-white/20 underline-offset-4 hover:text-white hover:decoration-white/70"
+                            className="font-mono text-[11px] underline decoration-emerald-200/30 underline-offset-4 hover:text-white hover:decoration-emerald-200"
                           >
-                            tx {shortHex(event.txHash)}
+                            tx={shortHex(event.txHash)}
                           </a>
                         ) : null}
+                        <span className="font-mono text-[11px] text-neutral-500">
+                          {new Date(event.createdAt).toLocaleTimeString()}
+                        </span>
                       </div>
                     </div>
                   ))}

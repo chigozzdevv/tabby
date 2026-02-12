@@ -28,6 +28,8 @@ const envSchema = z
     TABBY_REMIND_SECONDS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().optional()),
     TABBY_REMIND_REPEAT_SECONDS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().optional()),
     TABBY_MIN_REPAY_GAS_WEI: z.preprocess(emptyToUndefined, z.string().regex(/^\d+$/).optional()),
+    TABBY_NOTIFICATION_TARGET: z.preprocess(emptyToUndefined, z.string().optional()),
+    TABBY_SECURED_LOAN_LTV_WARNING_BPS: z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(10000).optional()),
   })
   .passthrough();
 

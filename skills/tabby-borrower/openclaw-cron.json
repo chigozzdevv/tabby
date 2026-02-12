@@ -1,0 +1,18 @@
+{
+  "cron": {
+    "jobs": [
+      {
+        "id": "tabby-heartbeat-gas",
+        "schedule": "*/5 * * * *",
+        "command": "cd /app/skills/tabby-borrower && node dist/bin/tabby-borrower.js heartbeat --quiet-ok",
+        "enabled": true
+      },
+      {
+        "id": "tabby-heartbeat-secured",
+        "schedule": "*/5 * * * *",
+        "command": "cd /app/skills/tabby-borrower && node dist/bin/tabby-borrower.js monitor-secured --quiet-ok",
+        "enabled": true
+      }
+    ]
+  }
+}

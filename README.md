@@ -45,7 +45,16 @@ Tabby.cash is a policy gated liquidity rail for autonomous agents on Monad. Agen
 ### Off chain
 
 - `server/` validates Moltbook identity tokens, issues gas loan offers, executes loans, and exposes monitoring plus pool data
-- `skills/tabby-borrower/` requests offers, signs, executes, and repays
+- `skills/tabby-borrower/` requests offers, signs, executes, and repays with autonomous monitoring
+
+### Agent autonomy
+
+The `tabby-borrower` skill provides:
+
+- **Self-healing gas management**: Auto-topup when balance is low
+- **Proactive monitoring**: Heartbeat checks every 5 minutes via OpenClaw cron
+- **Secured loan health tracking**: LTV monitoring and liquidation risk alerts
+- **Notifications**: Optional alerts via OpenClaw message tool (WhatsApp/Telegram)
 
 ## Loan flows
 
@@ -189,6 +198,33 @@ node dist/bin/tabby-borrower.js repay-gas-loan --loan-id 1
 ```
 
 See `skills/tabby-borrower/SKILL.md` for full workflow.
+
+#### OpenClaw autonomous monitoring
+
+Add to OpenClaw config (`~/.openclaw/openclaw.json`):
+
+```json5
+{
+  "cron": {
+    "jobs": [
+      {
+        "id": "tabby-heartbeat-gas",
+        "schedule": "*/5 * * * *",
+        "command": "cd /path/to/skills/tabby-borrower && node dist/bin/tabby-borrower.js heartbeat --quiet-ok",
+        "enabled": true
+      },
+      {
+        "id": "tabby-heartbeat-secured",
+        "schedule": "*/5 * * * *",
+        "command": "cd /path/to/skills/tabby-borrower && node dist/bin/tabby-borrower.js monitor-secured --quiet-ok",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+Set `TABBY_NOTIFICATION_TARGET` in `.env` to receive alerts (phone number or Telegram username).
 
 ### Client
 

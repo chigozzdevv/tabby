@@ -72,9 +72,41 @@ node dist/bin/tabby-borrower.js next-due
 Or run the heartbeat check (recommended for autonomous reminders):
 
 ```bash
-# Prints nothing unless something needs attention
 node dist/bin/tabby-borrower.js heartbeat --quiet-ok
 ```
+
+Or monitor secured loan health:
+
+```bash
+node dist/bin/tabby-borrower.js monitor-secured --quiet-ok
+```
+
+## OpenClaw Integration
+
+For autonomous monitoring, use OpenClaw cron jobs (every 5 minutes):
+
+```json5
+{
+  cron: {
+    jobs: [
+      {
+        id: "tabby-heartbeat-gas",
+        schedule: "*/5 * * * *",
+        command: "cd /app/skills/tabby-borrower && node dist/bin/tabby-borrower.js heartbeat --quiet-ok",
+        enabled: true
+      },
+      {
+        id: "tabby-heartbeat-secured",
+        schedule: "*/5 * * * *",
+        command: "cd /app/skills/tabby-borrower && node dist/bin/tabby-borrower.js monitor-secured --quiet-ok",
+        enabled: true
+      }
+    ]
+  }
+}
+```
+
+Set `TABBY_NOTIFICATION_TARGET` to your phone number or Telegram username to receive alerts via OpenClaw message tool.
 
 ## API usage notes for the agent
 

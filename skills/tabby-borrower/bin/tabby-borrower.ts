@@ -120,6 +120,7 @@ function usage() {
       "  repay-gas-loan --loan-id <id> [--amount-wei <wei>]",
       "  next-due [--borrower <0x...>]",
       "  heartbeat [--borrower <0x...>] [--quiet-ok] [--json]",
+      "  monitor-secured [--borrower <0x...>] [--quiet-ok] [--json]",
       "  approve-collateral [--amount <n>|--amount-wei <wei>] [--collateral-asset <0x...>] [--max]",
       "  open-secured-loan --principal <n>|--principal-wei <wei> --collateral-amount <n>|--collateral-amount-wei <wei> [--duration-seconds <sec>|--due-at <unix>] [--interest-bps <bps>] [--collateral-asset <0x...>] [--no-auto-approve]",
       "  secured-status --loan-id <id>",
@@ -695,6 +696,60 @@ const positionManagerAbi = [
   },
 ];
 
+const loanManagerReadAbi = [
+  {
+    type: "function",
+    name: "loans",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      { name: "borrower", type: "address" },
+      { name: "asset", type: "address" },
+      { name: "principal", type: "uint256" },
+      { name: "interestBps", type: "uint256" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "openedAt", type: "uint256" },
+      { name: "dueAt", type: "uint256" },
+      { name: "lastAccruedAt", type: "uint256" },
+      { name: "accruedInterest", type: "uint256" },
+      { name: "closed", type: "bool" },
+      { name: "positionId", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "outstanding",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+const positionManagerReadAbi = [
+  {
+    type: "function",
+    name: "positions",
+    stateMutability: "view",
+    inputs: [{ name: "positionId", type: "uint256" }],
+    outputs: [
+      { name: "owner", type: "address" },
+      { name: "collateralAsset", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      { name: "debtAsset", type: "address" },
+      { name: "debt", type: "uint256" },
+      { name: "liquidated", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "collateralValue",
+    stateMutability: "view",
+    inputs: [{ name: "positionId", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
 async function readGasLoanState(publicClient: any, agentLoanManager: string, loanId: number): Promise<GasLoanState> {
   const id = BigInt(loanId);
   const [loan, outstanding] = await Promise.all([
@@ -716,6 +771,153 @@ async function readGasLoanState(publicClient: any, agentLoanManager: string, loa
     defaulted: loan[9],
     outstandingWei: outstanding.toString(),
   };
+}
+
+async function monitorSecured() {
+  const quietOk = process.argv.includes("--quiet-ok");
+  const jsonOut = process.argv.includes("--json");
+
+  const borrower = await resolveBorrowerAddress();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(borrower)) throw new Error("Invalid borrower address");
+
+  const state: BorrowerState = (await tryLoadState()) ?? {};
+  const { chain, rpcUrl, loanManager, positionManager } = await getSecuredLoanConfigFromStateOrEnv();
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) }) as any;
+
+  const loanIds = Array.isArray(state.trackedSecuredLoanIds) ? state.trackedSecuredLoanIds.filter((n) => Number.isInteger(n) && n > 0) : [];
+  if (loanIds.length === 0) {
+    if (!quietOk) console.log("Tabby: no tracked secured loans.");
+    return;
+  }
+
+  const now = await chainNowSeconds(publicClient);
+  const warnLtvBps = ENV.TABBY_SECURED_LOAN_LTV_WARNING_BPS ?? 7500;
+  const alerts = [];
+
+  for (const loanId of loanIds) {
+    const loan = await publicClient.readContract({
+      address: loanManager,
+      abi: loanManagerReadAbi,
+      functionName: "loans",
+      args: [BigInt(loanId)],
+    });
+
+    if (!loan || loan.closed) continue;
+
+    const positionId = Number(loan.positionId);
+    const position = await publicClient.readContract({
+      address: positionManager,
+      abi: positionManagerReadAbi,
+      functionName: "positions",
+      args: [BigInt(positionId)],
+    });
+
+    if (!position || position.owner?.toLowerCase?.() !== borrower.toLowerCase()) continue;
+
+    const debt = await publicClient.readContract({
+      address: loanManager,
+      abi: loanManagerReadAbi,
+      functionName: "outstanding",
+      args: [BigInt(loanId)],
+    });
+
+    const collateralValue = await publicClient.readContract({
+      address: positionManager,
+      abi: positionManagerReadAbi,
+      functionName: "collateralValue",
+      args: [BigInt(positionId)],
+    });
+
+    if (BigInt(collateralValue) === 0n) continue;
+
+    const ltvBps = (BigInt(debt) * 10000n) / BigInt(collateralValue);
+    const dueInSeconds = Number(loan.dueAt) - now;
+
+    if (ltvBps >= BigInt(warnLtvBps)) {
+      alerts.push({
+        type: "highLtv",
+        loanId,
+        positionId,
+        ltvBps: Number(ltvBps),
+        warnLtvBps,
+        debtWei: debt.toString(),
+        collateralValueWei: collateralValue.toString(),
+      });
+    }
+
+    if (dueInSeconds <= 3600 && dueInSeconds > 0) {
+      alerts.push({
+        type: "dueSoon",
+        loanId,
+        positionId,
+        dueInSeconds,
+        debtWei: debt.toString(),
+      });
+    }
+
+    if (dueInSeconds <= 0) {
+      alerts.push({
+        type: "overdue",
+        loanId,
+        positionId,
+        overdueSeconds: -dueInSeconds,
+        debtWei: debt.toString(),
+      });
+    }
+  }
+
+  const payload = {
+    borrower,
+    chainId: chain.id,
+    loanManager,
+    positionManager,
+    now,
+    trackedLoanIds: loanIds,
+    alerts,
+  };
+
+  if (jsonOut) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  if (alerts.length === 0) {
+    if (!quietOk) {
+      console.log(`Tabby: ${loanIds.length} secured loan(s) tracked, all healthy.`);
+    }
+    return;
+  }
+
+  for (const a of alerts) {
+    if (a.type === "highLtv") {
+      const msg = `Tabby: secured loan ${a.loanId} (position ${a.positionId}) LTV ${a.ltvBps / 100}% (warning threshold ${a.warnLtvBps / 100}%). Consider adding collateral.`;
+      console.log(msg);
+      await sendNotification(`Secured loan ${a.loanId} LTV ${a.ltvBps / 100}% - add collateral`);
+    }
+    if (a.type === "dueSoon") {
+      const msg = `Tabby: secured loan ${a.loanId} due in ${formatSeconds(a.dueInSeconds)}. Repay: tabby-borrower repay-secured-loan --loan-id ${a.loanId}`;
+      console.log(msg);
+      await sendNotification(`Secured loan ${a.loanId} due in ${formatSeconds(a.dueInSeconds)}`);
+    }
+    if (a.type === "overdue") {
+      const msg = `Tabby: secured loan ${a.loanId} OVERDUE by ${formatSeconds(a.overdueSeconds)}. Repay ASAP.`;
+      console.log(msg);
+      await sendNotification(`URGENT: Secured loan ${a.loanId} OVERDUE by ${formatSeconds(a.overdueSeconds)}`);
+    }
+  }
+}
+
+async function sendNotification(message: string) {
+  const target = ENV.TABBY_NOTIFICATION_TARGET;
+  if (!target) return;
+  
+  try {
+    const { execSync } = await import("node:child_process");
+    execSync(`openclaw message send --target "${target}" --message "${message.replace(/"/g, '\\"')}"`, {
+      stdio: "ignore",
+      timeout: 10000,
+    });
+  } catch {}
 }
 
 async function heartbeat() {
@@ -859,23 +1061,23 @@ async function heartbeat() {
   for (const a of alerts) {
     if (a.type === "dueSoon") {
       const mon = formatEther(BigInt(a.outstandingWei));
-      console.log(
-        `Tabby: loanId=${a.loanId} due in ${formatSeconds(a.dueInSeconds)} (outstanding ~${mon} MON). Repay: tabby-borrower repay-gas-loan --loan-id ${a.loanId}`
-      );
+      const msg = `Tabby: loanId=${a.loanId} due in ${formatSeconds(a.dueInSeconds)} (outstanding ~${mon} MON). Repay: tabby-borrower repay-gas-loan --loan-id ${a.loanId}`;
+      console.log(msg);
+      await sendNotification(`Loan ${a.loanId} due in ${formatSeconds(a.dueInSeconds)}`);
       continue;
     }
     if (a.type === "overdue") {
       const mon = formatEther(BigInt(a.outstandingWei));
-      console.log(
-        `Tabby: loanId=${a.loanId} OVERDUE by ${formatSeconds(a.overdueSeconds)} (outstanding ~${mon} MON). Repay ASAP: tabby-borrower repay-gas-loan --loan-id ${a.loanId}`
-      );
+      const msg = `Tabby: loanId=${a.loanId} OVERDUE by ${formatSeconds(a.overdueSeconds)} (outstanding ~${mon} MON). Repay ASAP: tabby-borrower repay-gas-loan --loan-id ${a.loanId}`;
+      console.log(msg);
+      await sendNotification(`URGENT: Loan ${a.loanId} OVERDUE by ${formatSeconds(a.overdueSeconds)}`);
       continue;
     }
     if (a.type === "defaultEligible") {
       const mon = formatEther(BigInt(a.outstandingWei));
-      console.log(
-        `Tabby: loanId=${a.loanId} is past grace and can be defaulted (overdue ${formatSeconds(a.overdueSeconds)}, outstanding ~${mon} MON). Repay ASAP.`
-      );
+      const msg = `Tabby: loanId=${a.loanId} is past grace and can be defaulted (overdue ${formatSeconds(a.overdueSeconds)}, outstanding ~${mon} MON). Repay ASAP.`;
+      console.log(msg);
+      await sendNotification(`CRITICAL: Loan ${a.loanId} can be defaulted (overdue ${formatSeconds(a.overdueSeconds)})`);
       continue;
     }
     if (a.type === "lowGas") {
@@ -2083,6 +2285,11 @@ async function main() {
 
   if (cmd === "heartbeat") {
     await heartbeat();
+    return;
+  }
+
+  if (cmd === "monitor-secured") {
+    await monitorSecured();
     return;
   }
 
