@@ -359,58 +359,93 @@ export default function DashboardPage() {
         <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/5">
             <div className="border-b border-white/10 px-5 py-4">
-              <h2 className="text-lg font-semibold text-white">All Loans</h2>
+              <h2 className="text-lg font-semibold text-white">Loan Distribution</h2>
             </div>
             {loading ? (
               <p className="px-5 py-6 text-sm text-neutral-300">Loading...</p>
             ) : allLoans.length === 0 ? (
               <p className="px-5 py-6 text-sm text-neutral-300">No loans yet.</p>
             ) : (
-              <div className="max-h-[680px] overflow-auto divide-y divide-white/10">
-                {allLoans.map((loan) => (
-                  <div key={loan.key} className="px-5 py-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-full bg-white/10 px-2 py-1 text-[11px] uppercase tracking-wider text-neutral-300">
-                          {loan.kind}
-                        </span>
-                        <span className="font-mono text-sm text-white">#{loan.loanId}</span>
-                        <span className={`rounded-full border px-2 py-1 text-[11px] ${statusTone(loan.status)}`}>{loan.status}</span>
+              <div className="p-6">
+                <div className="mb-6 grid gap-4 sm:grid-cols-2">
+                  <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                    <p className="text-xs uppercase tracking-wider text-neutral-400">Gas Loans</p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{allLoans.filter(l => l.kind === "gas").length}</p>
+                    <div className="mt-3 space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Active</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "gas" && l.status === "active").length}</span>
                       </div>
-                      {loan.txHash ? (
-                        <a
-                          href={`${MONADSCAN_BASE}/tx/${loan.txHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-mono text-xs text-neutral-300 underline decoration-white/20 underline-offset-4 hover:text-white hover:decoration-white/70"
-                        >
-                          {shortHex(loan.txHash)}
-                        </a>
-                      ) : null}
-                    </div>
-                    <div className="mt-3 grid gap-3 text-sm text-neutral-300 sm:grid-cols-3">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Borrower</p>
-                        <a
-                          href={`${MONADSCAN_BASE}/address/${loan.borrower}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-mono text-neutral-100 underline decoration-white/20 underline-offset-4 hover:decoration-white/70"
-                        >
-                          {shortHex(loan.borrower)}
-                        </a>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Overdue</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "gas" && (l.status === "overdue" || l.status === "defaulted")).length}</span>
                       </div>
-                      <div>
-                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Due</p>
-                        <p>{formatDue(loan.dueAt)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] uppercase tracking-wider text-neutral-500">Outstanding</p>
-                        <p className="font-mono text-neutral-100">{formatTokenAmount(loan.outstandingWei)} MON</p>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Repaid</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "gas" && l.status === "closed").length}</span>
                       </div>
                     </div>
                   </div>
-                ))}
+                  <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                    <p className="text-xs uppercase tracking-wider text-neutral-400">Secured Loans</p>
+                    <p className="mt-2 text-2xl font-semibold text-white">{allLoans.filter(l => l.kind === "secured").length}</p>
+                    <div className="mt-3 space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Active</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "secured" && l.status === "active").length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Overdue</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "secured" && (l.status === "overdue" || l.status === "defaulted")).length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-neutral-400">Repaid</span>
+                        <span className="text-white">{allLoans.filter(l => l.kind === "secured" && l.status === "closed").length}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span className="text-neutral-400">Active</span>
+                      <span className="text-white">{activeCount} / {allLoans.length}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <div 
+                        className="h-full bg-emerald-500/80"
+                        style={{ width: `${allLoans.length > 0 ? (activeCount / allLoans.length) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span className="text-neutral-400">Overdue</span>
+                      <span className="text-white">{overdueCount} / {allLoans.length}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <div 
+                        className="h-full bg-red-500/80"
+                        style={{ width: `${allLoans.length > 0 ? (overdueCount / allLoans.length) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span className="text-neutral-400">Repaid</span>
+                      <span className="text-white">{closedLoans.length} / {allLoans.length}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <div 
+                        className="h-full bg-neutral-500/80"
+                        style={{ width: `${allLoans.length > 0 ? (closedLoans.length / allLoans.length) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
