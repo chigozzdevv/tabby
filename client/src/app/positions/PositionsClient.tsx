@@ -35,6 +35,11 @@ const securedPoolAbi = [
   { type: "function", name: "withdraw", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ type: "uint256" }] },
 ] as const;
 
+const wmonAbi = [
+  { type: "function", name: "deposit", stateMutability: "payable", inputs: [], outputs: [] },
+  { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] },
+] as const;
+
 const rewardsAbi = [
   { type: "function", name: "stake", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
   { type: "function", name: "unstake", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
@@ -507,13 +512,24 @@ export default function PositionsClient() {
       await ensureTargetChain(walletClient);
       const assetDecimals = securedPool.assetDecimals ?? 18;
       const amountWei = parseUnits(amount, assetDecimals);
+      
       await walletClient.writeContract({
         address: securedPool.asset as Address,
-        abi: erc20Abi,
+        abi: wmonAbi,
+        functionName: "deposit",
+        args: [],
+        account,
+        value: amountWei,
+      });
+      
+      await walletClient.writeContract({
+        address: securedPool.asset as Address,
+        abi: wmonAbi,
         functionName: "approve",
         args: [securedPool.address as Address, amountWei],
         account,
       });
+      
       const hash = await walletClient.writeContract({
         address: securedPool.address as Address,
         abi: securedPoolAbi,
@@ -947,7 +963,8 @@ export default function PositionsClient() {
 
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Deposit {securedSymbol}</p>
+                    <p className="text-xs uppercase tracking-[0.2em] text-neutral-500">Deposit MON</p>
+                    <p className="mt-1 text-xs text-neutral-500">Will be wrapped to WMON automatically</p>
                     <input
                       value={securedDeposit}
                       onChange={(event) => setSecuredDeposit(event.target.value)}
@@ -960,7 +977,7 @@ export default function PositionsClient() {
                       disabled={securedDepositWei === null || !poolData?.secured?.asset || isBusy || isWrongChain}
                       className="mt-3 w-full rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-900 transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {pendingTxLabel === "Secured deposit" ? "Processing..." : "Approve + Deposit"}
+                      {pendingTxLabel === "Secured deposit" ? "Processing..." : "Wrap + Deposit"}
                     </button>
                   </div>
                   {securedShares > BigInt(0) ? (
